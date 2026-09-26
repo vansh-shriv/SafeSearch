@@ -26,7 +26,7 @@ scope".
 - **Model check:** every reachable device state (10,750) under every interleaving of boot, confirm, install and
   tampering with power cuts, 658,946 transitions, 7 properties hold.
 - **Fuzzing:** 5 property-checking targets (images, metadata, whole-device state, install, recovery stream),
-  no violations. A libFuzzer + ASan/UBSan job is defined in CI (its first run is still pending).
+  no violations. CI also runs them under libFuzzer with ASan and UBSan (45 s per target), plus cppcheck.
 - **Validated by injection:** each of the sweep, fuzzers, model checker and recovery tests was shown to fail
   when real defects were injected into the production code.
 - **Emulator:** 32 Robot Framework tests on the compiled ARM binary, including power cuts at 14 chosen
