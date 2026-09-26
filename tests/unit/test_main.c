@@ -4,6 +4,7 @@
 #include "image_verify.h"
 #include "flash_map.h"
 #include "flash_hal.h"
+#include "sha256.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -29,6 +30,37 @@ static void test_crc32(void)
     CHECK(crc32_calc("123456789", 9) == 0xCBF43926u);
     CHECK(crc32_calc("", 0) == 0);
     CHECK(crc32_update(crc32_update(0, "1234", 4), "56789", 5) == 0xCBF43926u);
+}
+
+static int sha_is(const void *msg, size_t len, const char *hex)
+{
+    sha256_ctx c;
+    uint8_t d[32];
+    char s[65];
+    sha256_init(&c);
+    /* feed in odd-sized pieces to exercise buffering */
+    const uint8_t *p = msg;
+    for (size_t off = 0; off < len;) {
+        size_t n = (off % 7) + 1;
+        if (n > len - off) n = len - off;
+        sha256_update(&c, p + off, n);
+        off += n;
+    }
+    sha256_final(&c, d);
+    for (int i = 0; i < 32; i++) sprintf(s + 2 * i, "%02x", d[i]);
+    return strcmp(s, hex) == 0;
+}
+
+static void test_sha256(void)
+{
+    puts("sha256");
+    CHECK(sha_is("", 0, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
+    CHECK(sha_is("abc", 3, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
+    CHECK(sha_is("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq", 56,
+                 "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1"));
+    static uint8_t million[1000000];
+    memset(million, 'a', sizeof million);
+    CHECK(sha_is(million, sizeof million, "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0"));
 }
 
 static void test_metadata_basic(void)
@@ -187,6 +219,7 @@ static void test_image_basic(void)
 int main(void)
 {
     test_crc32();
+    test_sha256();
     test_metadata_basic();
     test_metadata_corruption();
     test_metadata_seq_wrap();

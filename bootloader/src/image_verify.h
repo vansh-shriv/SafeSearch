@@ -23,6 +23,8 @@ typedef enum {
     IMG_ERR_SIZE,
     IMG_ERR_VERSION_FLOOR,
     IMG_ERR_IMAGE_CRC,
+    IMG_ERR_HASH,
+    IMG_ERR_SIGNATURE,
 } img_status_t;
 
 /*

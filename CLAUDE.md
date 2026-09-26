@@ -16,8 +16,10 @@ mingw32-make -C tests/unit test
 Firmware build (bootloader + slot A/B app images into `build/`) and a headless Renode boot that prints USART1:
 ```
 mingw32-make
-powershell -NoProfile -File sim/run.ps1 -Seconds 0.5
+powershell -NoProfile -File sim/run.ps1 -Seconds 2
+python tests/renode/test_signature.py   # attack images under Renode; needs `mingw32-make` first
 ```
+`sim/run.ps1` also takes `-Steps "<monitor cmds>"` (e.g. `machine Reset; sysbus.cpu VectorTableOffset 0x08000000; emulation RunFor '2';`) and `-SlotA/-SlotB build/x.img` to swap images. `make` generates a dev keypair in gitignored `keys/` on first run; never commit it. Signature trust model is in `bootloader/src/image_crypto.h`.
 Renode (`C:\Program Files\Renode\bin\Renode.exe`) and the Arm toolchain (path in the `Makefile` as `TC_BIN`) are not on PATH. Renode `@path` arguments break on spaces in this repo's path, and relative file-backend paths are not resolved against the repo, so `sim/run.ps1` logs UART to `%TEMP%\safeflash`. Use `python -m pip`, not bare `pip` (different interpreter). Signing tools and Robot suites do not exist yet (see `PROGRESS.md`).
 
 Core bootloader logic (`bootloader/src/metadata.c`, `image_verify.c`, `crc32.c`) is hardware-independent and reaches flash only through `flash_hal.h`. Keep it that way so the same code is unit-tested on host and run on target.

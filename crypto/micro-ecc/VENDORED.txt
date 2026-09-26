@@ -1,0 +1,1 @@
+micro-ecc commit 541b3a78026420a3e369c4c9281c396b5e531113 (https://github.com/kmackay/micro-ecc), BSD-2-Clause. Vendored unmodified; curves and asm selected via -D flags in the top-level Makefile.

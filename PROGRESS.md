@@ -4,8 +4,8 @@ Spec: `safeflash-spec-simulator.md`. Update this file at the end of every work s
 
 ## Current status
 
-**Phases 0, 1, 2 done and verified under Renode.**
-Next up: Phase 3 (SHA-256 + ECDSA P-256 signature verification, `sign_image.py`).
+**Phases 0-3 done and verified under Renode (boot, metadata slot selection/fallback, signed images).**
+Next up: Phase 4 (trial boot, `confirm_healthy()`, IWDG watchdog, automatic revert).
 
 ## Environment (verified 2026-09-26)
 
@@ -52,15 +52,21 @@ Renode platform facts (`platforms/cpus/stm32f4.repl`): flash 2 MB @ `0x08000000`
 - [x] Verified under Renode (ad-hoc, via `sim/run.ps1 -Steps`): flash contents survive `machine Reset`; second boot reads metadata seq 1 without re-init; corrupting Slot A payload -> "bad image crc" -> falls back to B, seq 2 stored, next reset boots B directly. Resolves the earlier open question about flash surviving reset. Note: after `machine Reset` the script must re-set `sysbus.cpu VectorTableOffset 0x08000000`
 - [x] Repo pushed to https://github.com/vansh-shriv/SafeSearch.git (branch `main`). User authorised periodic commits there. Commit + push at the end of each milestone
 
+- [x] Phase 3: SHA-256 (`crypto/sha256.c`, own implementation, known-answer tests incl. 1M 'a') + vendored micro-ecc P-256 verify (`crypto/micro-ecc/`, upstream commit in `VENDORED.txt`, compiled with `-w`, unmodified)
+- [x] `tools/keytool.py` (gen keypair into gitignored `keys/`, emit `build/pubkey.c`), `tools/sign_image.py` (replaces `pack_image.py`). `make` auto-generates a dev key if none exists
+- [x] Trust model (documented in `image_crypto.h`): signature = ECDSA P-256 over SHA-256 of the first 48 header bytes (magic, version, size, crc32, payload sha256). Payload bound via the sha256 field. So version/size/hash tampering breaks the signature
+- [x] Bootloader now runs structural checks, then payload hash + signature, before any jump. Size with crypto: 6.4 KB of 32 KB
+- [x] `tests/renode/test_signature.py`: 6/6 pass under Renode. Attack images have all unkeyed CRCs recomputed so only crypto can reject them: stale hash, stale signature, version bump, wrong key, zeroed signature (+ valid control). Each is rejected with the expected reason and the bootloader falls back to genuine v2 in slot B
+- [x] Host unit tests now 26 checks (SHA-256 vectors added)
+
 ## In progress / next
 
-- [ ] Phase 3: SHA-256 + micro-ecc P-256 verify in bootloader, `tools/sign_image.py`, keypair generation, unit tests on host (sign in Python, verify in C), then Renode bad-signature test
-- [ ] Turn the ad-hoc Renode checks above into Robot Framework tests (`sim/robot/`) using the terminal tester
+- [ ] Phase 4: `confirm_healthy()` library, TRIAL boot state, IWDG watchdog, trial counter and automatic revert. Under Renode: bad v3 that never confirms reverts to previous slot after MAX_TRIALS
+- [ ] Turn the Renode checks into Robot Framework tests (`sim/robot/`) using the terminal tester; currently Python driving `sim/run.ps1`
+- [ ] Measure boot time / verify cost in emulated cycles (Phase 6 metrics). Not measured yet, so no numbers are claimed
 
 ## Later (per spec §6)
 
-- Phase 3: SHA-256 + micro-ecc P-256 verify, `tools/sign_image.py`
-- Phase 4: `confirm_healthy()`, IWDG trial watchdog, revert
 - Phase 5: staged-image OTA simulation, anti-rollback ratchet
 - Phase 6: Robot Framework suites, exhaustive Renode fault injection, CSV results, GitHub Actions CI, README/design/results docs
 
@@ -77,6 +83,7 @@ Renode platform facts (`platforms/cpus/stm32f4.repl`): flash 2 MB @ `0x08000000`
 # PowerShell, from repo root
 $env:Path = "C:\MinGW\bin;" + $env:Path
 mingw32-make -C tests/unit test        # host unit tests
-mingw32-make                           # build firmware into build/
-powershell -NoProfile -File sim/run.ps1 -Seconds 0.5   # boot in Renode, print UART
+mingw32-make                           # build firmware into build/ (creates keys/private.pem on first run)
+powershell -NoProfile -File sim/run.ps1 -Seconds 2     # boot in Renode, print UART (ECDSA verify needs ~1-2 simulated s)
+python tests/renode/test_signature.py  # attack-image tests under Renode (needs `make` first)
 ```

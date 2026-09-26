@@ -1,6 +1,7 @@
 #include "flash_map.h"
 #include "flash_hal.h"
 #include "image_verify.h"
+#include "image_crypto.h"
 #include "metadata.h"
 #include "uart.h"
 
@@ -17,6 +18,8 @@ static const char *status_str(img_status_t s)
     case IMG_ERR_SIZE:          return "bad size";
     case IMG_ERR_VERSION_FLOOR: return "below version floor";
     case IMG_ERR_IMAGE_CRC:     return "bad image crc";
+    case IMG_ERR_HASH:          return "bad payload hash";
+    case IMG_ERR_SIGNATURE:     return "bad signature";
     }
     return "?";
 }
@@ -35,7 +38,10 @@ static void jump_to_app(uint32_t slot)
 
 static img_status_t check_slot(uint8_t slot, uint32_t floor, image_header_t *h)
 {
+    /* Cheap structural checks first, then hash + signature. Nothing runs unless both pass. */
     img_status_t s = image_check_basic(slot_addr(slot), floor, h);
+    if (s == IMG_OK)
+        s = image_check_signature(slot_addr(slot), h);
     uart_puts("BL: slot ");
     uart_putc((char)('A' + slot));
     uart_puts(": ");

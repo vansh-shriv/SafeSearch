@@ -1,8 +1,8 @@
 # Host unit tests. Run with: mingw32-make -C tests/unit test
 CC = gcc
 SRC = ../../bootloader/src
-CFLAGS = -std=c99 -Wall -Wextra -Werror -g -I$(SRC) -I.
-OBJS = test_main.c mock_flash.c $(SRC)/crc32.c $(SRC)/metadata.c $(SRC)/image_verify.c
+CFLAGS = -std=c99 -Wall -Wextra -Werror -g -I$(SRC) -I../../crypto -I.
+OBJS = test_main.c mock_flash.c $(SRC)/crc32.c $(SRC)/metadata.c $(SRC)/image_verify.c ../../crypto/sha256.c
 
 test: test_main.exe
 	./test_main.exe
