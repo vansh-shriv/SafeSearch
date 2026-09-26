@@ -21,8 +21,9 @@ scope".
 
 2,803 distinct power-cut points across the OTA install, confirm and bootloader metadata paths, 0 violations.
 The harness was validated by injecting real defects, which it caught (2,705 and 88 violations respectively).
-Renode suites: signature attacks 6/6, trial and revert 12/12, OTA and anti-rollback 8/8. Bootloader 6.9 KB
-of a 32 KB region. Details in `docs/results.md`.
+Renode suites: signature attacks 6/6, trial and revert 12/12, OTA and anti-rollback 8/8, power cuts on the
+real ARM binary 15/15. Bootloader 6.9 KB of a 32 KB region. Verifying a signature is 98.8% of boot cost
+(7.96 M emulated instructions, not cycles). Details in `docs/results.md`.
 
 ## Layout
 
@@ -51,10 +52,12 @@ powershell -NoProfile -File sim/run.ps1 -Seconds 2   # boot in Renode, print UAR
 python tests/renode/test_signature.py
 python tests/renode/test_trial.py
 python tests/renode/test_ota.py
+python tests/renode/test_powercut.py [--quick]
+python tests/renode/measure_boot.py     # needs the build_nosig bootloader, see the script header
 ```
 
 The dev private key is generated locally and must never be committed. `keys/` is in `.gitignore`.
 
 ## Status
 
-Phases 0-5 complete. Phase 6 partly done; remaining work is tracked in `PROGRESS.md`.
+Phases 0-6 complete apart from the items listed in `PROGRESS.md` (Robot Framework port, CI not yet run on a runner).

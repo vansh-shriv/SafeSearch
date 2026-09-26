@@ -4,50 +4,45 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-`safeflash-spec-simulator.md` (PRD + technical design + build roadmap) is the source of truth; follow its phase order (§6) and repo layout (§7). **`PROGRESS.md` is the running log of what is done, in progress, and blocked. Read it first and update it at the end of each work session.**
+`safeflash-spec-simulator.md` (PRD + technical design + build roadmap) is the source of truth for intent. **`PROGRESS.md` is the running log of what is done, in progress, and known caveats. Read it first and update it at the end of each work session.** `docs/design.md` and `docs/results.md` describe the finished design and measured results. Work is committed to https://github.com/vansh-shriv/SafeSearch.git (`main`); the user authorised periodic commits and pushes there.
 
 ## Commands
 
-Host unit tests (bootloader logic against a mock flash). MinGW is not on PATH by default:
+Nothing is on PATH by default (Windows). In PowerShell from the repo root:
 ```
 $env:Path = "C:\MinGW\bin;" + $env:Path
-mingw32-make -C tests/unit test
+mingw32-make                            # firmware -> build/ (generates a dev key in gitignored keys/ on first run)
+mingw32-make -C tests/unit test         # host unit tests (26 checks)
+mingw32-make -C tests/unit sweep        # exhaustive host power-cut sweep -> build/fault_sweep.csv (~12 s); needs `mingw32-make` first
+python tools/summarize_sweep.py         # CSV -> results table
+powershell -NoProfile -File sim/run.ps1 -Seconds 2   # headless Renode boot, prints USART1
+python tests/renode/test_signature.py   # attack images with self-consistent CRCs
+python tests/renode/test_trial.py       # trial boot / confirm / IWDG revert (a few minutes)
+python tests/renode/test_ota.py         # OTA install, ratchet, anti-rollback
+python tests/renode/test_powercut.py    # power cuts on the real ARM binary (--quick for a subset)
+python tests/renode/measure_boot.py     # emulated instruction counts (needs the build_nosig bootloader, see script header)
 ```
-Firmware build (bootloader + slot A/B app images into `build/`) and a headless Renode boot that prints USART1:
-```
-mingw32-make
-powershell -NoProfile -File sim/run.ps1 -Seconds 2
-python tests/renode/test_signature.py   # attack images under Renode; needs `mingw32-make` first
-python tests/renode/test_trial.py       # trial boot / confirm / IWDG revert under Renode (a few minutes)
-```
-Boot policy lives in `bootloader/src/main.c` (`boot_config.h` has `MAX_TRIALS` / `TRIAL_WDT_MS`); app-side `sf_confirm_healthy()` / `sf_wdt_kick()` are in `app/src/safeflash_app.c`. Test states are staged with `tools/mkmeta.py` + Renode `LoadBinary`. `sim/boot.resc` has a `reset` macro that re-points VTOR after any reset; keep it or IWDG resets halt the CPU.
-`sim/run.ps1` also takes `-Steps "<monitor cmds>"` (e.g. `machine Reset; sysbus.cpu VectorTableOffset 0x08000000; emulation RunFor '2';`) and `-SlotA/-SlotB build/x.img` to swap images. `make` generates a dev keypair in gitignored `keys/` on first run; never commit it. Signature trust model is in `bootloader/src/image_crypto.h`.
-Renode (`C:\Program Files\Renode\bin\Renode.exe`) and the Arm toolchain (path in the `Makefile` as `TC_BIN`) are not on PATH. Renode `@path` arguments break on spaces in this repo's path, and relative file-backend paths are not resolved against the repo, so `sim/run.ps1` logs UART to `%TEMP%\safeflash`. Use `python -m pip`, not bare `pip` (different interpreter). Signing tools and Robot suites do not exist yet (see `PROGRESS.md`).
+The Renode suites drive `sim/run.ps1`, which takes `-Seconds`, `-Steps "<monitor cmds run after the first RunFor>"`, `-Pre "<monitor cmds before it>"`, `-SlotA/-SlotB build/x.img`. They all share `%TEMP%\safeflash\uart.log` (Renode `@path` arguments break on spaces in this repo's path), so never run two at once. Renode is `C:\Program Files\Renode\bin\Renode.exe`; the Arm toolchain path is `TC_BIN` in the `Makefile`. Use `python -m pip`, not bare `pip` (different interpreter). There is no single-test runner: each Renode script is one suite, and the unit test is one executable.
 
-Core bootloader logic (`bootloader/src/metadata.c`, `image_verify.c`, `crc32.c`) is hardware-independent and reaches flash only through `flash_hal.h`. Keep it that way so the same code is unit-tested on host and run on target.
+Use the Write/Edit tools for multi-line files; long bash heredocs with backslashes are unreliable in this environment.
 
-## What it is
+## Architecture
 
-A secure bootloader with signed A/B OTA for an ARM Cortex-M (STM32F4) MCU, run **entirely under Renode** (fallback: QEMU Cortex-M machine driven via GDB stub). No physical board. Firmware logic must stay hardware-agnostic so it runs unchanged on a real board later.
-
-## Architecture (spans multiple files)
-
-- **Flash layout**: bootloader sectors, two ping-pong metadata sectors (A/B), then Slot A and Slot B application regions. Derive the exact sector map from the Renode platform `.repl` file for the chosen part, not the datasheet. The emulated part must match.
-- **Image header** (`image_header_t`): magic `0x53414645` ("SAFE"), version, size, CRC32, SHA-256, 64-byte ECDSA P-256 signature, header CRC32.
-- **Metadata** (`boot_metadata_t`): magic, monotonic `seq`, `active_slot`, `boot_state` (NORMAL/TRIAL/CONFIRMED/REVERT_PENDING), `trial_count`, `min_allowed_version` (anti-rollback floor), CRC32. Two copies are written alternately and the valid one with the highest `seq` wins, so a power cut mid-write never leaves zero valid copies.
-- **Boot flow**: load metadata → pick active slot → validate header → check version ≥ `min_allowed_version` → verify SHA-256 + ECDSA → jump (set VTOR) in TRIAL or NORMAL. The app calls `confirm_healthy()`. Otherwise the IWDG trial watchdog resets, and after MAX_TRIALS the bootloader reverts `active_slot`.
-- **OTA is simulated**: a host script writes the signed image straight into the inactive slot's emulated flash. The transport is deliberately out of scope, or optionally a minimal UART receiver. Updates must never touch the running slot.
-- **Crypto**: micro-ecc (or trimmed mbedTLS) vendored in `crypto/`. `tools/sign_image.py` signs images offline. Crypto and metadata/header/version logic are unit-tested on the host with flash mocked as memory buffers.
+- **`bootloader/src/boot_logic.c`** holds the whole boot decision (metadata load/init, verify, trial accounting, revert). It is hardware-independent and is compiled **unchanged** into both the bootloader (`main.c` adds UART, watchdog arm, jump) and the host fault sweep. All flash access goes through `flash_hal.h`: `flash_stm32.c` on target, `tests/unit/mock_flash.c` on host (can cut power at any mutation/byte, torn erases, snapshots). Keep new logic behind that seam so the sweep covers it.
+- **Flash map** (`flash_map.h`, from Renode's `stm32f4.repl`): bootloader sectors 0-1, metadata A/B sectors 2/3, Slot A `0x08020000`, Slot B `0x08080000` (384 KB each). Each slot has a `0x400` header region then the vector table; apps are position-dependent (one linker script per slot).
+- **Trust model** (`image_crypto.h`): ECDSA P-256 over SHA-256 of the first 48 header bytes (magic, version, size, crc32, payload sha256); the payload is bound via the sha256 field. CRCs are unkeyed, corruption-only. Public key comes from `build/pubkey.c`, generated by `tools/keytool.py` from the gitignored `keys/private.pem`. Never commit keys.
+- **Metadata** (`metadata.c`): two CRC'd copies, ping-pong writes, newest valid `seq` wins (wrap-safe). Holds active slot, boot state, trial count, and `min_allowed_version` (anti-rollback floor).
+- **Trial/revert**: bootloader persists `trial_count` before jumping and arms the IWDG. In TRIAL, `sf_wdt_kick()` (`app/src/safeflash_app.c`) refuses to kick until `sf_confirm_healthy()` succeeds, so an unconfirmed image is reset even if it runs. After `MAX_TRIALS` the bootloader reverts to the other slot (`boot_config.h`).
+- **Anti-rollback**: `sf_confirm_healthy()` ratchets the floor to the running version; the bootloader and `sf_install_update()` both enforce it.
+- **Update path** (`app/src/safeflash_update.c`): erase inactive slot, program payload, header last, then atomically commit metadata (TRIAL). OTA transport is simulated: the host drops `{'STGE', len, image}` at RAM `0x20020000` and the app installs it.
+- **`sim/boot.resc`** defines a `reset` macro that re-points VTOR after any reset; without it IWDG/SYSRESETREQ resets halt the CPU. Renode hook pitfalls (do not call `machine.Reset()` or assign a plain int to `PC` inside a hook) are in `PROGRESS.md` under Known caveats.
 
 ## Testing model
 
-- Host unit tests (metadata ping-pong, header validation, version logic).
-- Renode Robot Framework suites in `sim/robot/`: happy path, OTA, bad signature, rollback (reset MAX_TRIALS+1 times), anti-rollback.
-- **Fault injection is exhaustive, not sampled**: reset the machine at every chosen PC/instruction-count point in the update routine (before/mid erase, before/mid write, around the metadata write, and so on). Assert the device always boots some signature-verified image and that metadata is never left with no valid copy. Log each cut point and its outcome to CSV.
+Three layers, all real code: host unit tests; the host sweep (every flash mutation and byte boundary, 3 torn-erase states, real crypto; invariants: never bricked, old-or-new image only, metadata valid, floor monotonic, converges); Renode suites on the ARM binary. After touching `boot_logic.c`, `metadata.c`, `safeflash_update.c` or `safeflash_app.c`, run the sweep. Its value was validated by mutation testing (`docs/results.md`); keep it able to fail.
 
 ## Constraints to preserve
 
-- No current/power measurement. Say so plainly in the README and never invent a number. Cycle counts may be reported only if labeled "cycles, not measured current".
-- Report host timing and target (emulated) timing separately and label them.
-- Docs must include an explicit "simulator-only scope" section in `docs/design.md`.
-- If falling back from Renode to QEMU, record the reason in the design doc.
+- No current/power measurement and no invented numbers. Instruction counts are labelled "emulated instructions", not cycles or time.
+- `docs/design.md` must keep its explicit "simulator-only scope" section.
+- `SF_MEASURE_NO_SIGNATURE` exists only for the boot-cost comparison build and must never be used in a real build.

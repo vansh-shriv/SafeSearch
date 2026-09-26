@@ -56,6 +56,7 @@ one million `a`), metadata ping-pong, corruption fallback, sequence wrap, header
 |---|---|---|
 | `tests/renode/test_signature.py` | 6/6 | Valid image boots. Attack images with self-consistent CRCs (stale hash, stale signature, version bump, wrong key, zeroed signature) are each rejected for the expected reason and the device falls back to the genuine image |
 | `tests/renode/test_trial.py` | 12/12 | A good image confirms and survives past the watchdog window and a reset. A "bad" image that never confirms gets exactly 3 watchdog-reset trials, then the bootloader reverts to the previous slot and stays there |
+| `tests/renode/test_powercut.py` | 15/15 | Power cuts on the real ARM binary: a Renode hook on the flash driver freezes the CPU at a chosen point during an OTA install, the machine is reset, and the bootloader must recover. Points: before the target-slot erase, three payload word boundaries, four header word boundaries, before the metadata sector erase, and each of the 5 words of the metadata commit. Every cut boots the old v1; the un-cut control boots v2 |
 | `tests/renode/test_ota.py` | 8/8 | OTA v1 to v2 installs, boots in trial, confirms, and raises the floor to 2. The installer refuses a validly signed v1 below the floor. The bootloader refuses v1 below the floor even if metadata points at it. A bad-signature image is installed but rejected at boot and reverted |
 
 ## Sizes (arm-none-eabi-size, `-Os`)
@@ -68,8 +69,24 @@ one million `a`), metadata ping-pong, corruption fallback, sequence wrap, header
 
 Signed image file = 1024-byte header region + app (2680 bytes for v1/v2).
 
-## Not measured (yet)
+## Boot cost (emulated instructions)
 
-- Boot time and ECDSA verify cost in emulated cycles or instructions.
-- Renode-level power cuts at chosen program-counter addresses on the real binary (the host sweep covers the
-  same code paths systematically, but not the compiled ARM binary).
+`python tests/renode/measure_boot.py`. Renode's executed-instruction counter from bootloader `main` to app
+`main` on a steady-state boot (metadata already valid, one image verified). These are emulated
+*instructions*, not cycles and not wall-clock time: Renode does not model Cortex-M4 pipeline timing, so
+the figure is a relative measure only.
+
+| Bootloader build | Instructions to reach the app |
+|---|---:|
+| With SHA-256 + ECDSA P-256 verification | 7,957,332 |
+| Without signature check (measurement-only build, never shipped) | 97,250 |
+| Signature verification cost | 7,860,082 (98.8% of boot) |
+
+The measurement-only build (`-DSF_MEASURE_NO_SIGNATURE`) is 2,260 bytes against 6,868 bytes for the real
+bootloader, so SHA-256 plus micro-ecc account for about 4.6 KB of code.
+
+## Not measured
+
+- Wall-clock boot time, cycle-accurate timing, and current/power draw (no hardware).
+- Renode-level power cuts cover 15 chosen points, not every instruction boundary. The exhaustive coverage is
+  the host sweep, which runs the same source but the host build, not the ARM binary.

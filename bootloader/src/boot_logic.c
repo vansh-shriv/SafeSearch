@@ -38,8 +38,10 @@ static img_status_t check_slot(uint8_t slot, uint32_t floor, image_header_t *h)
 {
     /* Cheap structural checks first, then hash + signature. Nothing runs unless both pass. */
     img_status_t s = image_check_basic(slot_addr(slot), floor, h);
+#ifndef SF_MEASURE_NO_SIGNATURE   /* only ever defined for the boot-time comparison build; never ship */
     if (s == IMG_OK)
         s = image_check_signature(slot_addr(slot), h);
+#endif
     boot_puts("BL: slot ");
     put_slot(slot);
     boot_puts(": ");

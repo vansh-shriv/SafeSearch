@@ -61,8 +61,8 @@ int flash_erase_sector(uint32_t sector)
     return rc;
 }
 
-/* Program one aligned 32-bit word. */
-static int program_word(uint32_t addr, uint32_t val)
+/* Program one aligned 32-bit word. Kept out-of-line: Renode power-cut tests hook this symbol. */
+__attribute__((noinline)) static int program_word(uint32_t addr, uint32_t val)
 {
     FLASH_SR = SR_ERRORS;
     FLASH_CR = CR_PG | CR_PSIZE32;

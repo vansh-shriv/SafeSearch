@@ -4,7 +4,7 @@ Spec: `safeflash-spec-simulator.md`. Update this file at the end of every work s
 
 ## Current status
 
-**Phases 0-5 done and verified. Phase 6 in progress: host exhaustive fault sweep done (2,803 fault points, 0 violations, harness mutation-tested). Still to do: Renode-level power cuts on the real binary, CI, README/design/results docs, cycle-count metrics.**
+**Phases 0-6 done and verified.** Remaining (nice-to-have): port the Python-driven Renode suites to Robot Framework, run the CI workflow on a real runner (written but never executed), add a Renode job to CI.
 
 ## Environment (verified 2026-09-26)
 
@@ -41,12 +41,14 @@ Renode platform facts (`platforms/cpus/stm32f4.repl`): flash 2 MB @ `0x08000000`
 - Phase 6 (host): `tests/unit/fault_sweep.c` (`mingw32-make -C tests/unit sweep`, ~12 s). Real production code + real crypto vs mock flash, power cut at EVERY flash mutation and every byte boundary inside each write and 3 torn-erase states each. Scenarios: OTA install (2,707 points), confirm, bootloader first-boot init, trial-counter increment, revert commit (24 each). Total **2,803 distinct fault points, 0 violations**. Invariants: always boots a verified image (never bricked); image is old or new only; metadata valid after boot; floor never decreases and never exceeds running version; converges (confirmed or reverted). Every (cut point -> outcome) row is in `build/fault_sweep.csv`; `tools/summarize_sweep.py` prints the table
 - **Harness validated by mutation testing** (so 0 violations is meaningful): installer erasing the ACTIVE slot -> 2,705/2,707 violations (bricked); metadata rewritten in place instead of ping-pong -> 88 violations (floor decreased). Misordering install (metadata before image write) is NOT a violation because the bootloader fallback reverts a torn image; that is by design
 
+- Phase 6 (Renode): `tests/renode/test_powercut.py` 15/15 on the real ARM binary. A Renode PC hook on `program_word` / `flash_erase_sector` freezes the CPU at a chosen address (PC redirected into `Default_Handler`'s `for(;;)`), then `machine Reset`. Points: before target-slot erase, 3 payload words, 4 header words, before metadata erase, all 5 metadata-commit words. Every cut boots old v1; the control boots v2. `--quick` runs 8. A cut that never fires lets the install complete and fails the test
+- Phase 6 (metrics): `tests/renode/measure_boot.py`: 7,957,332 emulated instructions from bootloader entry to app entry (steady state) with signature verification vs 97,250 without; verify = 98.8% of boot. Instructions, not cycles. Measurement-only bootloader: `mingw32-make BUILD=build_nosig EXTRA_CFLAGS=-DSF_MEASURE_NO_SIGNATURE build_nosig/bootloader.elf` (`SF_MEASURE_NO_SIGNATURE` must never be used in a real build)
+- Docs: `README.md`, `docs/design.md` (has the simulator-only scope section), `docs/results.md`
+- CI: `.github/workflows/ci.yml` builds firmware, runs unit tests and the sweep on ubuntu. **Never run on a runner** (written blind; risks: newer gcc `-Werror` warnings in the tests, `python` vs `python3`)
+
 ## In progress / next
 
-- [ ] Renode-level power cuts on the real binary (PC hook on the flash driver's word-program function, reset at chosen addresses), to cross-check the host sweep on the actual firmware
-- [ ] GitHub Actions CI (unit tests + sweep on host; Renode suites need Renode installed on the runner)
-- [ ] Metrics: boot time and verify cost in emulated cycles/instructions (not yet measured; no numbers claimed). Bootloader/app sizes are real: bootloader ~6.7 KB (of 32 KB), apps ~1.1-1.6 KB
-- [ ] `README.md`, `docs/design.md` (with explicit simulator-only scope section), `docs/results.md`
+- [ ] Run CI on a real runner and fix whatever breaks; add a Renode job (Renode Linux portable build; `sim/run.ps1` is PowerShell with a hardcoded Windows Renode path, so the Renode suites need a portable runner script first)
 - [ ] Optionally convert Python-driven Renode suites to Robot Framework (`sim/robot/`)
 
 ## Known caveats
@@ -55,6 +57,8 @@ Renode platform facts (`platforms/cpus/stm32f4.repl`): flash 2 MB @ `0x08000000`
 - Renode programs a word atomically, so torn-word programming is only modelled in the host sweep (byte-granular prefix, a superset of real word-granular behaviour). Torn-erase patterns are modelled host-side only.
 - Host sweep does not nest faults (a second cut during the recovery boot after a first cut). The recovery boot's own metadata writes are covered individually by the `boot_*` scenarios.
 - Metadata is CRC-protected, not authenticated: an attacker who can write flash directly can forge it (including the floor). Out of scope, same as the spec's threat model (image authenticity, not flash-bus tampering).
+- Renode Python hooks (`sysbus.cpu AddHook <addr> "<python>"`): `self` is the CPU. Calling `self.machine.Reset()` inside a hook crashes Renode (fatal error). Assigning `self.PC = <int>` crashes too ("expected RegisterValue"); use `self.PC = type(self.PC).Create(addr, 32)`. Registers: `self.GetRegister(n).RawValue`. Instruction count: `self.ExecutedInstructions`, which restarts at each machine reset. Renode logs a spurious "Tried to erase flash, but MER and SER are reset" warning although erases do take effect (verified: erased sectors read 0xFF; Renode flash starts as 0x00, not 0xFF).
+- All Renode suites share `%TEMP%\safeflash\uart.log`: never run two at once.
 - Renode speed: a spinning app costs wall time per emulated second (~2-3 s wall per emulated s). Never hit peripheral registers every loop iteration (a per-iteration IWDG kick made 4 emulated s take 166 s).
 - Shell: long bash heredocs with backslashes are unreliable here (a `\\n` became a real newline); use the Write/Edit tools for multi-line files. Use `cmd /c "mingw32-make 2>&1"` in PowerShell.
 
@@ -71,4 +75,6 @@ powershell -NoProfile -File sim/run.ps1 -Seconds 2     # boot in Renode, print U
 python tests/renode/test_signature.py  # attack images under Renode (needs `make` first)
 python tests/renode/test_trial.py      # trial/confirm/watchdog/revert under Renode (~3-4 min)
 python tests/renode/test_ota.py        # OTA install, ratchet, anti-rollback under Renode (~3 min)
+python tests/renode/test_powercut.py   # power cuts on the real binary, 15 points (~8 min; --quick = 8 points)
+python tests/renode/measure_boot.py    # instruction counts (needs the build_nosig bootloader, see script header)
 ```

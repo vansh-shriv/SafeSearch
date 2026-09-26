@@ -17,6 +17,7 @@ CFLAGS  = -mcpu=cortex-m4 -mthumb -mfloat-abi=soft -Os -g -std=c99 -Wall -Wextra
 # micro-ecc: P-256 only, no compressed points
 UECC_FLAGS = -DuECC_SUPPORTS_secp160r1=0 -DuECC_SUPPORTS_secp192r1=0 -DuECC_SUPPORTS_secp224r1=0 \
              -DuECC_SUPPORTS_secp256r1=1 -DuECC_SUPPORTS_secp256k1=0 -DuECC_SUPPORT_COMPRESSED_POINT=0
+CFLAGS += $(EXTRA_CFLAGS)
 LDFLAGS = -nostartfiles -nostdlib -Wl,--gc-sections
 
 BL_OBJS = $(addprefix $(BUILD)/bl/, startup.o main.o boot_logic.o crc32.o image_verify.o image_crypto.o libc_min.o \
