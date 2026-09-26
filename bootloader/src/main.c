@@ -1,13 +1,14 @@
 #include "flash_map.h"
 #include "flash_hal.h"
+#include "boot_config.h"
 #include "image_verify.h"
 #include "image_crypto.h"
 #include "metadata.h"
 #include "uart.h"
+#include "wdt.h"
 
 #define SCB_VTOR (*(volatile uint32_t *)0xE000ED08u)
 
-/* Phase 2: metadata-driven slot selection, CRC-level image checks. Crypto arrives in Phase 3. */
 static const char *status_str(img_status_t s)
 {
     switch (s) {
@@ -57,6 +58,11 @@ static void halt(const char *msg)
         ;
 }
 
+static void put_slot(uint8_t slot)
+{
+    uart_putc((char)('A' + slot));
+}
+
 int main(void)
 {
     boot_metadata_t md;
@@ -78,24 +84,54 @@ int main(void)
     uart_puts("BL: metadata seq ");
     uart_puthex(md.seq);
     uart_puts(" active ");
-    uart_putc((char)('A' + md.active_slot));
+    put_slot(md.active_slot);
+    uart_puts(" state ");
+    uart_putc((char)('0' + md.boot_state));
+    uart_puts(" trials ");
+    uart_putc((char)('0' + md.trial_count));
     uart_puts("\n");
 
     uint8_t slot = md.active_slot;
-    if (check_slot(slot, md.min_allowed_version, &h) != IMG_OK) {
-        /* Active slot unusable: fall back to the other one and persist the switch. */
+    int revert = md.boot_state == BOOT_STATE_TRIAL && md.trial_count >= MAX_TRIALS;
+    if (revert)
+        uart_puts("BL: trial limit reached\n");
+
+    if (revert || check_slot(slot, md.min_allowed_version, &h) != IMG_OK) {
+        /* Trial exhausted or active slot unusable: go back to the other slot and make that permanent. */
         slot = 1 - slot;
         if (check_slot(slot, md.min_allowed_version, &h) != IMG_OK)
             halt("BL: no bootable image, halting\n");
         md.active_slot = slot;
+        md.boot_state = BOOT_STATE_CONFIRMED;
+        md.trial_count = 0;
         if (metadata_store(&md) != 0)
             halt("BL: metadata write failed\n");
-        uart_puts("BL: switched active slot\n");
+        uart_puts("BL: reverted to slot ");
+        put_slot(slot);
+        uart_puts("\n");
     }
 
-    uart_puts("BL: jumping to version ");
+    int trial = md.boot_state == BOOT_STATE_TRIAL;
+    if (trial) {
+        /* Count the attempt before running the image, so a hang/crash is charged against it. */
+        md.trial_count++;
+        if (metadata_store(&md) != 0)
+            halt("BL: metadata write failed\n");
+    }
+
+    uart_puts("BL: jumping to slot ");
+    put_slot(slot);
+    uart_puts(" version ");
     uart_puthex(h.version);
     uart_puts("\n");
+    if (trial) {
+        uart_puts("BL: trial ");
+        uart_putc((char)('0' + md.trial_count));
+        uart_puts("/");
+        uart_putc((char)('0' + MAX_TRIALS));
+        uart_puts(", watchdog armed\n");
+        wdt_start(TRIAL_WDT_MS);
+    }
     jump_to_app(slot_addr(slot));
     return 0;
 }

@@ -4,8 +4,8 @@ Spec: `safeflash-spec-simulator.md`. Update this file at the end of every work s
 
 ## Current status
 
-**Phases 0-3 done and verified under Renode (boot, metadata slot selection/fallback, signed images).**
-Next up: Phase 4 (trial boot, `confirm_healthy()`, IWDG watchdog, automatic revert).
+**Phases 0-4 done and verified under Renode (boot, metadata slot selection/fallback, signed images, trial boot + watchdog + automatic revert).**
+Next up: Phase 5 (OTA staging simulation + anti-rollback ratchet).
 
 ## Environment (verified 2026-09-26)
 
@@ -59,21 +59,30 @@ Renode platform facts (`platforms/cpus/stm32f4.repl`): flash 2 MB @ `0x08000000`
 - [x] `tests/renode/test_signature.py`: 6/6 pass under Renode. Attack images have all unkeyed CRCs recomputed so only crypto can reject them: stale hash, stale signature, version bump, wrong key, zeroed signature (+ valid control). Each is rejected with the expected reason and the bootloader falls back to genuine v2 in slot B
 - [x] Host unit tests now 26 checks (SHA-256 vectors added)
 
+- [x] Phase 4: TRIAL boot, `sf_confirm_healthy()` / `sf_wdt_kick()` app library (`app/src/safeflash_app.c`), IWDG trial watchdog, trial counter, automatic revert. Config in `bootloader/src/boot_config.h` (`MAX_TRIALS` 3, `TRIAL_WDT_MS` 2000)
+  - Design: bootloader increments `trial_count` and persists it BEFORE jumping, then arms the IWDG (cannot be stopped). In TRIAL, `sf_wdt_kick()` refuses to kick until `sf_confirm_healthy()` succeeds, so an image that runs but never confirms is still reset at the end of the window (bounded trial, not just hang detection). On the boot where `trial_count >= MAX_TRIALS` the bootloader reverts to the other slot (must verify, and satisfy the version floor), sets CONFIRMED, count 0
+  - A failed/interrupted `sf_confirm_healthy()` metadata write leaves TRIAL, so worst case is a revert, never an unsafe state
+  - `BOOT_STATE_REVERT_PENDING` exists in the enum but is not used by this design
+- [x] `tests/renode/test_trial.py`: 12/12 pass under Renode. Good v2 confirms and survives well past the window and a reset; bad v3 (`-DAPP_CONFIRM=0`) gets exactly 3 watchdog-reset trials, then reverts to slot A (v1) and stays there. Signature suite still 6/6
+- [x] `tools/mkmeta.py` builds raw metadata blobs for staging test states (loaded via Renode `LoadBinary`)
+- [x] `sim/boot.resc` now defines a `reset` macro (sets VTOR to the bootloader after any reset). Without it an IWDG reset leaves the CPU at address 0 and it halts. `sim/run.ps1` gained `-Pre` (commands before the first run)
+
 ## In progress / next
 
-- [ ] Phase 4: `confirm_healthy()` library, TRIAL boot state, IWDG watchdog, trial counter and automatic revert. Under Renode: bad v3 that never confirms reverts to previous slot after MAX_TRIALS
+- [ ] Phase 5: staged-image OTA simulation (host script writes signed image to the inactive slot + metadata TRIAL), anti-rollback version ratchet (raise `min_allowed_version` on confirm; app needs to know its own version), Renode tests for rollback attempt (old signed v1 written back after v3 confirmed)
 - [ ] Turn the Renode checks into Robot Framework tests (`sim/robot/`) using the terminal tester; currently Python driving `sim/run.ps1`
 - [ ] Measure boot time / verify cost in emulated cycles (Phase 6 metrics). Not measured yet, so no numbers are claimed
 
 ## Later (per spec §6)
 
-- Phase 5: staged-image OTA simulation, anti-rollback ratchet
 - Phase 6: Robot Framework suites, exhaustive Renode fault injection, CSV results, GitHub Actions CI, README/design/results docs
 
 ## Known caveats
 
 - Mock flash models an interrupted erase as random garbage and an interrupted write as a byte-prefix. Real STM32 programming is word-granular, so this is a superset for byte writes.
 - Unit tests run only on host; Renode coverage so far is the single happy-path boot above.
+- Renode's flash controller ignores PSIZE and the SR error bits (it logs "Unhandled write" warnings for them), so flash error paths in `flash_stm32.c` cannot be exercised in the emulator.
+- Renode speed: a spinning app costs wall time per emulated second (~2-3 s wall per emulated second with the rate-limited kick loop). Avoid tight loops that hit peripheral registers every iteration (a per-iteration IWDG kick made 4 emulated s take 166 s wall).
 - Renode's flash controller may not model real erase/program timing or the "code stalls while flash busy" behaviour, so partial-erase/partial-write fault windows need to be injected by us (reset at chosen PC/instruction counts), not expected to occur naturally.
 - Shell: long bash heredocs fail here; use the Write tool for multi-line files. Use `cmd /c "mingw32-make 2>&1"` in PowerShell to avoid stderr being turned into errors.
 
@@ -86,4 +95,5 @@ mingw32-make -C tests/unit test        # host unit tests
 mingw32-make                           # build firmware into build/ (creates keys/private.pem on first run)
 powershell -NoProfile -File sim/run.ps1 -Seconds 2     # boot in Renode, print UART (ECDSA verify needs ~1-2 simulated s)
 python tests/renode/test_signature.py  # attack-image tests under Renode (needs `make` first)
+python tests/renode/test_trial.py      # trial/confirm/watchdog/revert under Renode (~3-4 min)
 ```

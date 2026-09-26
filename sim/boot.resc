@@ -15,3 +15,11 @@ sysbus LoadELF $bl
 sysbus LoadBinary $slotA 0x08020000
 sysbus LoadBinary $slotB 0x08080000
 sysbus.cpu VectorTableOffset 0x08000000
+
+# Runs after every machine reset (manual `machine Reset` and IWDG resets). Flash contents persist across
+# reset; only the CPU needs pointing back at the bootloader's vector table (the STM32 flash alias at 0x0
+# is not modelled).
+macro reset
+"""
+    sysbus.cpu VectorTableOffset 0x08000000
+"""

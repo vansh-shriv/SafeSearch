@@ -18,7 +18,9 @@ Firmware build (bootloader + slot A/B app images into `build/`) and a headless R
 mingw32-make
 powershell -NoProfile -File sim/run.ps1 -Seconds 2
 python tests/renode/test_signature.py   # attack images under Renode; needs `mingw32-make` first
+python tests/renode/test_trial.py       # trial boot / confirm / IWDG revert under Renode (a few minutes)
 ```
+Boot policy lives in `bootloader/src/main.c` (`boot_config.h` has `MAX_TRIALS` / `TRIAL_WDT_MS`); app-side `sf_confirm_healthy()` / `sf_wdt_kick()` are in `app/src/safeflash_app.c`. Test states are staged with `tools/mkmeta.py` + Renode `LoadBinary`. `sim/boot.resc` has a `reset` macro that re-points VTOR after any reset; keep it or IWDG resets halt the CPU.
 `sim/run.ps1` also takes `-Steps "<monitor cmds>"` (e.g. `machine Reset; sysbus.cpu VectorTableOffset 0x08000000; emulation RunFor '2';`) and `-SlotA/-SlotB build/x.img` to swap images. `make` generates a dev keypair in gitignored `keys/` on first run; never commit it. Signature trust model is in `bootloader/src/image_crypto.h`.
 Renode (`C:\Program Files\Renode\bin\Renode.exe`) and the Arm toolchain (path in the `Makefile` as `TC_BIN`) are not on PATH. Renode `@path` arguments break on spaces in this repo's path, and relative file-backend paths are not resolved against the repo, so `sim/run.ps1` logs UART to `%TEMP%\safeflash`. Use `python -m pip`, not bare `pip` (different interpreter). Signing tools and Robot suites do not exist yet (see `PROGRESS.md`).
 

@@ -23,7 +23,7 @@ BL_OBJS = $(addprefix $(BUILD)/bl/, startup.o main.o crc32.o image_verify.o imag
           metadata.o flash_stm32.o sha256.o uECC.o pubkey.o)
 
 .PHONY: all clean
-all: $(BUILD)/bootloader.elf $(BUILD)/app_v1_slotA.img $(BUILD)/app_v2_slotB.img
+all: $(BUILD)/bootloader.elf $(BUILD)/app_v1_slotA.img $(BUILD)/app_v2_slotB.img $(BUILD)/app_v3_slotB_bad.img
 	$(SIZE) $(BUILD)/bootloader.elf $(BUILD)/app_v1_slotA.elf
 
 $(BUILD)/bl:
@@ -52,22 +52,24 @@ $(BUILD)/pubkey.c: keys/private.pem tools/keytool.py
 $(BUILD)/bootloader.elf: $(BL_OBJS) bootloader/linker/bootloader.ld
 	$(CC) $(CFLAGS) $(LDFLAGS) -Tbootloader/linker/bootloader.ld $(BL_OBJS) -o $@
 
-# app_v<N>_slot<X>: version N linked for slot X
-$(BUILD)/app_v1_slotA.elf: app/src/startup.c app/src/main.c app/linker/app_slot_a.ld
+# Apps link the SafeFlash app library (confirm_healthy / watchdog gating), which needs the metadata + flash driver.
+APP_SRCS = app/src/startup.c app/src/main.c app/src/safeflash_app.c            $(BL_SRC)/metadata.c $(BL_SRC)/crc32.c $(BL_SRC)/flash_stm32.c $(BL_SRC)/libc_min.c
+
+# APP_RULE(name, version, linker script, extra flags): builds build/<name>.elf and the signed build/<name>.img
+define APP_RULE
+$(BUILD)/$(1).elf: $(APP_SRCS) app/linker/$(3).ld $(wildcard app/src/*.h $(BL_SRC)/*.h)
 	mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) -DAPP_VERSION=1 $(LDFLAGS) -Tapp/linker/app_slot_a.ld app/src/startup.c app/src/main.c -o $@
+	$(CC) $(CFLAGS) -DAPP_VERSION=$(2) $(4) $(LDFLAGS) -Tapp/linker/$(3).ld $(APP_SRCS) -o $$@
 
-$(BUILD)/app_v2_slotB.elf: app/src/startup.c app/src/main.c app/linker/app_slot_b.ld
-	mkdir -p $(BUILD)
-	$(CC) $(CFLAGS) -DAPP_VERSION=2 $(LDFLAGS) -Tapp/linker/app_slot_b.ld app/src/startup.c app/src/main.c -o $@
+$(BUILD)/$(1).img: $(BUILD)/$(1).elf tools/sign_image.py keys/private.pem
+	$(OBJCOPY) -O binary $$< $(BUILD)/$(1).bin
+	$(PY) tools/sign_image.py $(BUILD)/$(1).bin $$@ --version $(2)
+endef
 
-$(BUILD)/app_v1_slotA.img: $(BUILD)/app_v1_slotA.elf tools/sign_image.py keys/private.pem
-	$(OBJCOPY) -O binary $< $(BUILD)/app_v1_slotA.bin
-	$(PY) tools/sign_image.py $(BUILD)/app_v1_slotA.bin $@ --version 1
-
-$(BUILD)/app_v2_slotB.img: $(BUILD)/app_v2_slotB.elf tools/sign_image.py keys/private.pem
-	$(OBJCOPY) -O binary $< $(BUILD)/app_v2_slotB.bin
-	$(PY) tools/sign_image.py $(BUILD)/app_v2_slotB.bin $@ --version 2
+$(eval $(call APP_RULE,app_v1_slotA,1,app_slot_a,))
+$(eval $(call APP_RULE,app_v2_slotB,2,app_slot_b,))
+# v3 "bad" image for slot B: runs but never calls sf_confirm_healthy(), so the trial must expire and revert
+$(eval $(call APP_RULE,app_v3_slotB_bad,3,app_slot_b,-DAPP_CONFIRM=0))
 
 clean:
 	rm -rf $(BUILD)
