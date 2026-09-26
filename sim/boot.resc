@@ -1,0 +1,17 @@
+:name: SafeFlash boot
+:description: Load bootloader + staged slot images into emulated STM32F4 and run
+
+using sysbus
+
+# Paths are relative to the repo root: run Renode from there.
+$bl?=@build/bootloader.elf
+$slotA?=@build/app_v1_slotA.img
+$slotB?=@build/app_v2_slotB.img
+
+mach create "safeflash"
+machine LoadPlatformDescription @platforms/boards/stm32f4_discovery.repl
+
+sysbus LoadELF $bl
+sysbus LoadBinary $slotA 0x08020000
+sysbus LoadBinary $slotB 0x08080000
+sysbus.cpu VectorTableOffset 0x08000000
