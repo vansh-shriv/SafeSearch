@@ -4,7 +4,7 @@ Spec: `safeflash-spec-simulator.md`. Update this file at the end of every work s
 
 ## Current status
 
-**Phases 0-6 done and verified; Renode suites ported to Robot Framework.** Remaining: run the CI workflow on a real GitHub runner (written, never executed; run results could not be read because the repo API returns 403 unauthenticated).
+**Phases 0-6 done and verified; Renode suites ported to Robot Framework.** CI has run on GitHub and the host job passes (see CI under Done). Nothing is blocking; remaining items are optional.
 
 ## Environment (verified 2026-09-26)
 
@@ -44,11 +44,12 @@ Renode platform facts (`platforms/cpus/stm32f4.repl`): flash 2 MB @ `0x08000000`
 - Phase 6 (Renode): `sim/robot/powercut.robot` 15/15 on the real ARM binary (Test Template, 14 cuts + control). A Renode PC hook on `program_word` / `flash_erase_sector` freezes the CPU at a chosen address (PC redirected into `Default_Handler`'s `for(;;)`), then `machine Reset`. Points: before target-slot erase, 3 payload words, 4 header words, before metadata erase, all 5 metadata-commit words. Every cut boots old v1; the control boots v2. A cut that never fires lets the install complete, which `Uart Should Not Show APP: install ok` catches (verified with a deliberately broken test)
 - Phase 6 (metrics): `tests/renode/measure_boot.py`: 7,957,332 emulated instructions from bootloader entry to app entry (steady state) with signature verification vs 97,250 without; verify = 98.8% of boot. Instructions, not cycles. Measurement-only bootloader: `mingw32-make BUILD=build_nosig EXTRA_CFLAGS=-DSF_MEASURE_NO_SIGNATURE build_nosig/bootloader.elf` (`SF_MEASURE_NO_SIGNATURE` must never be used in a real build)
 - Docs: `README.md`, `docs/design.md` (has the simulator-only scope section), `docs/results.md`
-- CI: `.github/workflows/ci.yml` builds firmware, runs unit tests and the sweep on ubuntu. **Never run on a runner** (written blind; risks: newer gcc `-Werror` warnings in the tests, `python` vs `python3`)
+- CI: `.github/workflows/ci.yml` has a `host` job (build firmware, unit tests, exhaustive sweep, on ubuntu) and an experimental `renode` job (`continue-on-error`, latest Linux portable Renode, Robot suites). Run results reported by the user (the agent cannot read Actions results; the repo API returns 403 unauthenticated): the workflows for `07e2698` (Renode power-cut suite, boot-cost), `c2ffe4c` (untrack build artifact) and `389e3fc` (Robot port + Renode job) passed, so the host job works on ubuntu with the current gcc (no `-Werror` breakage, no `python` vs `python3` problem). The workflow for `5fac5b5` failed in the sweep step: that commit accidentally contained a Windows-built `tests/unit/uecc_host.o`, which make did not rebuild on Linux (i386 object, Windows `Crypt*` symbols). Fixed by `c2ffe4c` (untracked, `*.o` ignored); the red run for `5fac5b5` stays in history
+  - Not established: because the `renode` job is `continue-on-error`, a green workflow does not prove the Robot suites passed on the Linux Renode. Check that job's own status in the Actions tab; if it is red, the likely cause is a Renode version difference from the 1.16 used locally (or the `renode-test` path/args in the workflow)
 
 ## In progress / next
 
-- [ ] Run CI on a real runner and fix whatever breaks. Two jobs: `host` (build, unit tests, sweep) and `renode` (experimental, `continue-on-error`; latest Linux portable Renode vs the 1.16 used locally, so failures may be version differences). Needs someone with access to the repo's Actions tab (or `gh auth login`)
+- [ ] Confirm the `renode` CI job's own status (not just the overall workflow, which stays green either way). If it passes, remove `continue-on-error` so regressions are visible; if it fails, fix or pin the Renode version. Optional: make the pin explicit (currently `renode-latest`)
 
 ## Known caveats
 
