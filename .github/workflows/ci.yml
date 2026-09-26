@@ -32,10 +32,10 @@ jobs:
           path: build/fault_sweep.csv
 
   renode:
-    # Robot Framework suites on the emulated STM32F4. EXPERIMENTAL: developed against Renode 1.16 on Windows;
-    # this job uses the latest Linux portable build, so a failure here may be a Renode-version difference.
+    # Robot Framework suites on the emulated STM32F4. Developed against Renode 1.16 on Windows and confirmed
+    # green on the latest Linux portable build. If a future Renode release breaks these, pin the download URL
+    # to a known-good version instead of renode-latest.
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
