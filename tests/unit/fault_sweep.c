@@ -21,6 +21,8 @@
 #include "image_verify.h"
 #include "metadata.h"
 #include "safeflash_app.h"
+#include "recovery.h"
+#include "recovery_env.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -105,11 +107,17 @@ static void record(tally_t *t, int op, const char *kind, size_t partial, const b
 
 /* Common post-cut assertions after power comes back and the device boots once. */
 static uint32_t pre_floor;   /* floor in the pre-op state; must never decrease */
+static int allow_unbootable;   /* recovery scenario: no bootable image after a cut is legal if recovery can resume */
 
 static int verify_recovered(const boot_decision_t *d, int rc, uint32_t v_old, uint32_t v_new, const char **why)
 {
     boot_metadata_t md;
 
+    if (rc != 0 && allow_unbootable) {
+        /* Nothing bootable is acceptable here (recovery mode would run) but metadata must still be intact. */
+        if (metadata_load(&md) != 0) { *why = "no valid metadata while unbootable"; return 0; }
+        return 1;
+    }
     if (rc != 0) { *why = "device did not boot (bricked)"; return 0; }
     if (d->version != v_old && d->version != v_new) { *why = "booted unexpected version"; return 0; }
     if (metadata_load(&md) != 0) { *why = "no valid metadata after boot"; return 0; }
@@ -245,6 +253,33 @@ static int post_boot_next(const boot_decision_t *d, int rc, const char **why)
     return 1;
 }
 
+
+/* ---- scenario 4: cuts inside a serial-recovery install onto a device with nothing bootable ---- */
+static uint8_t rec_stream_buf[SLOT_SIZE * 2];
+static size_t rec_stream_len;
+static uint8_t bricked_state[MOCK_FLASH_SIZE];
+
+static void op_recovery(void)
+{
+    rec_env_set_input(rec_stream_buf, rec_stream_len);
+    (void)recovery_run();
+}
+
+static int post_recovery(const boot_decision_t *d, int rc, const char **why)
+{
+    boot_decision_t d2;
+
+    if (rc == 0) {   /* something boots after the cut: it can only be the new, verified v2 in slot B */
+        if (d->version != 2 || d->slot != 1) { *why = "booted something other than the verified new image"; return 0; }
+        return 1;
+    }
+    /* nothing bootable: recovery mode would run again, and a full transfer must succeed from this state */
+    rec_env_set_input(rec_stream_buf, rec_stream_len);
+    if (recovery_run() != RECOVERY_INSTALLED) { *why = "recovery cannot resume after the cut"; return 0; }
+    if (boot_once(&d2) != 0 || d2.version != 2 || d2.slot != 1) { *why = "device not bootable after resumed recovery"; return 0; }
+    return 1;
+}
+
 int main(void)
 {
     tally_t t;
@@ -309,6 +344,18 @@ int main(void)
     t = (tally_t){ "boot_revert", 0, 0 };
     printf("boot_revert: cutting every mutation of the revert-to-old-slot commit\n");
     sweep(&t, snap, op_boot, 1, 1, post_boot_next);   /* the only legal end state is v1 */
+    printf("  %ld cut points, %ld violations\n", t.points, t.bad);
+
+    /* 4. Recovery install onto a device that lost both images. */
+    mock_flash_restore(golden_after_factory);
+    (void)flash_erase_sector(SLOT_A_FIRST_SECTOR);      /* slot A wiped: nothing bootable */
+    mock_flash_save(bricked_state);
+    rec_stream_len = rec_stream_from_image(rec_stream_buf, v2_img, v2_len);
+    t = (tally_t){ "recovery_install", 0, 0 };
+    printf("recovery_install: cutting every flash mutation of a serial recovery install\n");
+    allow_unbootable = 1;
+    sweep(&t, bricked_state, op_recovery, 2, 2, post_recovery);
+    allow_unbootable = 0;
     printf("  %ld cut points, %ld violations\n", t.points, t.bad);
 
     fclose(csv);

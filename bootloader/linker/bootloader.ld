@@ -7,7 +7,7 @@ MEMORY
     RAM   (rwx) : ORIGIN = 0x20000000, LENGTH = 128K
 }
 
-_estack = ORIGIN(RAM) + LENGTH(RAM);
+_estack = ORIGIN(RAM) + LENGTH(RAM) - 16;   /* top 16 bytes are the recovery-request word, outside the stack */
 
 SECTIONS
 {

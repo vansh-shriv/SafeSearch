@@ -80,6 +80,9 @@ def main():
     flipped2 = bytes([v2_bin[0] ^ 1]) + v2_bin[1:]
     write("stage_evil.bin", stage(header(flipped2, 2, key, sig=v2_img[48:112])))
 
+    # request word for forced recovery (bootloader/src/boot_config.h RECOVERY_REQUEST_MAGIC)
+    write("recovery_request.bin", struct.pack("<I", 0x52435652))
+
     # device states
     write("meta_trial_b.bin", mkmeta.build(seq=1, active=1, state="trial", trials=0, floor=0))
     write("meta_floor2_trial_a.bin", mkmeta.build(seq=1, active=0, state="trial", trials=0, floor=2))

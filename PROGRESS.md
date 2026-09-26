@@ -4,7 +4,7 @@ Spec: `safeflash-spec-simulator.md`. Update this file at the end of every work s
 
 ## Current status
 
-**Phases 0-6 done and verified; Renode suites ported to Robot Framework.** CI runs on GitHub and both jobs (host, renode) pass (see CI under Done). Nothing is blocking; the one remaining item is optional.
+**Phases 0-6 done and verified; Renode suites ported to Robot Framework; then (no-board hardening pass) serial recovery mode, fuzzing and model checking added and verified locally.** The earlier CI jobs (host, renode) passed on GitHub; the CI changes from the hardening pass (new `analysis` job with cppcheck, sanitizers and libFuzzer, plus model-check/recovery/fuzz steps in `host`, and the recovery suite in `renode`) have **not been run on a runner yet**.
 
 ## Environment (verified 2026-09-26)
 
@@ -47,9 +47,22 @@ Renode platform facts (`platforms/cpus/stm32f4.repl`): flash 2 MB @ `0x08000000`
 - CI: `.github/workflows/ci.yml` has a `host` job (build firmware, unit tests, exhaustive sweep, on ubuntu) and a `renode` job (latest Linux portable Renode, Robot suites; required, green). Run results reported by the user (the agent cannot read Actions results; the repo API returns 403 unauthenticated): the workflows for `07e2698` (Renode power-cut suite, boot-cost), `c2ffe4c` (untrack build artifact) and `389e3fc` (Robot port + Renode job) passed, so the host job works on ubuntu with the current gcc (no `-Werror` breakage, no `python` vs `python3` problem). The workflow for `5fac5b5` failed in the sweep step: that commit accidentally contained a Windows-built `tests/unit/uecc_host.o`, which make did not rebuild on Linux (i386 object, Windows `Crypt*` symbols). Fixed by `c2ffe4c` (untracked, `*.o` ignored); the red run for `5fac5b5` stays in history
   - The `renode` job (Robot suites on the latest Linux portable Renode) was confirmed green by the user on `389e3fc`, so `continue-on-error` was removed and it is now a required job. It downloads `renode-latest`; if a future Renode release breaks the suites, pin the URL to a known-good version
 
+### Hardening pass (2026-09-27): recovery, fuzzing, model checking
+
+- **Serial recovery mode**: `bootloader/src/recovery.{c,h}` (hardware-independent), `tools/recover.py` (host side, socket or serial). Entered when `boot_decide` fails (was: halt) or when the RAM request word holds `RECOVERY_REQUEST_MAGIC` (`sf_request_recovery()` in the app library). Protocol: `0xA5 | type | len | payload | crc32`, stop-and-wait, BEGIN/DATA/END/ABORT, ACK/NAK, idempotent retransmits, resync after noise. Header held in RAM and written last; verification identical to a normal boot (incl. version floor) before any metadata commit; only the non-active slot is written. Top 16 bytes of RAM reserved for the request word in all three linker scripts (`_estack` lowered). Bootloader now 8044 B text + 1300 B bss (of 32 KB)
+- Tests for it: `mingw32-make -C tests/unit recovery` (22 checks, real signatures); sweep scenario `recovery_install` (2715 cut points, 0 violations; either still bootable with only the verified image or unbootable-but-resumable); fuzz target `recovery`; `sim/robot/recovery.robot` 4/4 in Renode (both slots bad -> recovery -> install; forged image refused then genuine installs; forced recovery on a healthy device; request word consumed). Mutation-tested: recovery writing the active slot -> 2715 sweep violations + unit failure; skipping the signature check -> 4 unit failures
+- **Fuzzing** (`tests/fuzz`): 5 property-checking targets (`fuzz_image`, `fuzz_metadata`, `fuzz_boot`, `fuzz_install`, `fuzz_recovery`) in `fuzz_targets.c`, shared by a portable mutation driver (`fuzz_driver.c`, deterministic seeds, outcome feedback, structure-aware CRC/hash/frame fixups) and libFuzzer (`fuzz_libfuzzer.c`). gcov coverage from the driver: boot_logic 87.7% lines, recovery 88.2%, metadata 96.4%, image_verify 92.3%, image_crypto 95.5%, safeflash_update 80.8%. Coverage measurement found real gaps (trial-counter path, hash/signature failure results, rollback refusal never reached), fixed by building those cases deliberately. Mutation-tested: recovery wrong slot and floor ignored in the slot check are both caught. `SAN=1` builds the unit tests with ASan/UBSan (Linux only)
+- **Model checking** (`tests/model/model_check.c`): explicit-state, production `boot_decide`/metadata/confirm/install with crypto abstracted to an oracle over slot contents {invalid, v1, v2, v3, forged}; actions boot+{hang, confirm, install v1/v2/v3/forged}, each with a power cut at every mutation (torn writes, 3 torn-erase patterns), plus a tampering adversary (any slot overwritten at rest). 10,750 reachable states, 658,946 transitions (508,446 with a power cut), 7 properties S1-S5, L1, L2, all hold (~90 s). `tests/model/mutate.py`: 5 injected defects, all caught. Two mutants first survived (floor check, confirm lowering floor): both were equivalent in the first model (unreachable without an adversary / no progress property), fixing the model (tamper actions, property S5) rather than the code. CBMC was not available (not on winget/conda-forge for Windows), so no bounded-model-checking harness was written
+- **Static analysis**: cppcheck 2.22 (`warning,portability,performance,style`) clean after fixing const-correctness, two parameters shadowing `slot_addr()`, and a redundant assignment; one narrow suppression for linker-symbol pointer comparison in the startup files
+- Bugs/observations found on the way: (1) the bootloader Makefile rule had no header dependencies, so editing `uart.h` did not rebuild `main.o` (fixed); (2) Renode socket terminals emulate telnet by default, which corrupts binary frames: create with `false` as the 3rd argument; (3) polling a UART register in a tight loop made one 3-emulated-second wait take 547 s of wall time; a short delay between polls (realistic and harmless on hardware) brought it to ~20 s; (4) `SF_MEASURE_NO_SIGNATURE` no longer shrinks the bootloader because recovery links the crypto
+- CI additions (**not yet run on a runner**): `host` job gains recovery tests, model check, and a 20k-iteration fuzz smoke run; new `analysis` job (cppcheck, unit/recovery/sweep under ASan+UBSan via `SAN=1`, libFuzzer builds with clang, seed corpora from `tests/fuzz/gen_corpus.py`, 45 s per target); `renode` job runs `recovery.robot` too. Likely trouble spots: distro cppcheck version differing from 2.22, ASan complaining about something MinGW could not, `gen_corpus.py` needing Python >= 3.9 (`randbytes`)
+
 ## In progress / next
 
+- [ ] Look at the first GitHub run of the new CI jobs and fix whatever breaks (see the CI note above)
 - [ ] Optional: pin the CI Renode download to a specific version instead of `renode-latest` for reproducible runs
+- [ ] Optional: recovery hardening: a receive timeout / watchdog, interrupt-driven RX with a ring buffer, resumable transfers, and a bounded model check (CBMC) of `boot_decide` over symbolic metadata
+- [ ] Hardware (if a board is ever available): real flash error paths, DWT cycle counts, RDP/write-protect option bytes, power measurement
 
 ## Known caveats
 
@@ -72,6 +85,9 @@ mingw32-make                           # build firmware into build/ (creates key
 mingw32-make -C tests/unit sweep       # exhaustive power-cut sweep, writes build/fault_sweep.csv
 python tools/summarize_sweep.py        # results table from the CSV
 powershell -NoProfile -File sim/run.ps1 -Seconds 2     # boot in Renode, print UART
-powershell -NoProfile -File sim/run_robot.ps1   # Robot suites under Renode: signature, trial, ota, powercut (~2 min). One-time: py -3 -m pip install robotframework==6.1 robotframework-retryfailed==0.2.0 psutil pyyaml telnetlib3
+mingw32-make -C tests/unit recovery    # serial recovery tests
+mingw32-make -C tests/model check      # model check (~90 s); python tests/model/mutate.py to mutation-test it
+mingw32-make -C tests/fuzz run ITERS=50000   # fuzz driver, 5 targets (`coverage` target for a gcov report)
+powershell -NoProfile -File sim/run_robot.ps1   # Robot suites under Renode: signature, trial, ota, powercut, recovery (~2-4 min). One-time: py -3 -m pip install robotframework==6.1 robotframework-retryfailed==0.2.0 psutil pyyaml telnetlib3
 python tests/renode/measure_boot.py    # instruction counts (needs the build_nosig bootloader, see script header)
 ```

@@ -24,13 +24,13 @@ static const char *status_str(img_status_t s)
 
 static void put_slot(uint8_t slot)
 {
-    char c[2] = { (char)('A' + slot), 0 };
+    const char c[2] = { (char)('A' + slot), 0 };
     boot_puts(c);
 }
 
 static void put_digit(unsigned v)
 {
-    char c[2] = { (char)('0' + v), 0 };
+    const char c[2] = { (char)('0' + v), 0 };
     boot_puts(c);
 }
 

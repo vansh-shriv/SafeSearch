@@ -13,11 +13,17 @@ Nothing is on PATH by default (Windows). In PowerShell from the repo root:
 $env:Path = "C:\MinGW\bin;" + $env:Path
 mingw32-make                            # firmware -> build/ (generates a dev key in gitignored keys/ on first run)
 mingw32-make -C tests/unit test         # host unit tests (26 checks)
-mingw32-make -C tests/unit sweep        # exhaustive host power-cut sweep -> build/fault_sweep.csv (~12 s); needs `mingw32-make` first
+mingw32-make -C tests/unit recovery     # serial recovery tests with real signatures (needs `mingw32-make` first)
+mingw32-make -C tests/unit sweep        # exhaustive host power-cut sweep -> build/fault_sweep.csv (~25 s); needs `mingw32-make` first
+mingw32-make -C tests/model check       # explicit-state model check of all reachable device states (~90 s); no firmware build needed
+python tests/model/mutate.py            # mutation-test the model checker (injects 5 defects, expects a VIOLATION each)
+mingw32-make -C tests/fuzz run ITERS=50000     # portable fuzz driver, 5 targets; `coverage` target = gcov report; `libfuzzer CC=clang` on Linux
+python tests/fuzz/gen_corpus.py         # seed corpora for the libFuzzer binaries
 python tools/summarize_sweep.py         # CSV -> results table
 powershell -NoProfile -File sim/run.ps1 -Seconds 2   # headless Renode boot, prints USART1
-powershell -NoProfile -File sim/run_robot.ps1                      # all Robot suites under Renode (~2 min)
-powershell -NoProfile -File sim/run_robot.ps1 -Suite ota,powercut  # a subset (signature, trial, ota, powercut)
+powershell -NoProfile -File sim/run_robot.ps1                      # all Robot suites under Renode (~2-4 min)
+powershell -NoProfile -File sim/run_robot.ps1 -Suite ota,recovery  # a subset (signature, trial, ota, powercut, recovery)
+python tools/recover.py IMAGE --socket HOST:PORT                   # host side of serial recovery (or --serial COM3)
 python tests/renode/measure_boot.py     # emulated instruction counts (needs the build_nosig bootloader, see script header)
 ```
 `sim/run_robot.ps1` runs `tests/renode/gen_artifacts.py` (attack images, OTA blobs, metadata blobs, hook addresses into `build/robot_art/`) then Renode's `renode-test` on `sim/robot/*.robot`; keywords live in `sim/robot/safeflash.resource`. It sets `PYTHONIOENCODING=utf-8` (Robot 6.1 breaks on the default `utf-8:surrogateescape`) and needs the one-time `py -3 -m pip install robotframework==6.1 robotframework-retryfailed==0.2.0 psutil pyyaml telnetlib3`. For ad-hoc UART output use `sim/run.ps1`, which takes `-Seconds`, `-Steps "<monitor cmds run after the first RunFor>"`, `-Pre "<monitor cmds before it>"`, `-SlotA/-SlotB build/x.img`. It logs UART to `%TEMP%\safeflash\uart.log` (Renode `@path` arguments break on spaces in this repo's path), so do not run two at once. Robot suites use Renode's terminal tester and are unaffected; inside them, `path add` on the repo root makes the relative `build/...` paths in `sim/boot.resc` resolve. Renode is `C:\Program Files\Renode\bin\Renode.exe`; the Arm toolchain path is `TC_BIN` in the `Makefile`. Use `python -m pip`, not bare `pip` (different interpreter). There is no single-test runner: each Renode script is one suite, and the unit test is one executable.
@@ -33,11 +39,14 @@ Use the Write/Edit tools for multi-line files; long bash heredocs with backslash
 - **Trial/revert**: bootloader persists `trial_count` before jumping and arms the IWDG. In TRIAL, `sf_wdt_kick()` (`app/src/safeflash_app.c`) refuses to kick until `sf_confirm_healthy()` succeeds, so an unconfirmed image is reset even if it runs. After `MAX_TRIALS` the bootloader reverts to the other slot (`boot_config.h`).
 - **Anti-rollback**: `sf_confirm_healthy()` ratchets the floor to the running version; the bootloader and `sf_install_update()` both enforce it.
 - **Update path** (`app/src/safeflash_update.c`): erase inactive slot, program payload, header last, then atomically commit metadata (TRIAL). OTA transport is simulated: the host drops `{'STGE', len, image}` at RAM `0x20020000` and the app installs it.
+- **Serial recovery** (`bootloader/src/recovery.c`, hardware-independent like `boot_logic.c`; byte stream via `recovery_getc/putc`): entered when `boot_decide` fails or when the RAM request word (`boot_config.h`, top 16 bytes of RAM reserved by all three linker scripts) holds the magic. Framed stop-and-wait protocol documented in `recovery.h`; header held in RAM and written last; verification identical to a normal boot before any metadata commit. The Makefile has no header dependencies for app sources beyond wildcards, but the bootloader object rule now lists `bootloader/src/*.h`; keep it that way or header edits silently do not rebuild.
 - **`sim/boot.resc`** defines a `reset` macro that re-points VTOR after any reset; without it IWDG/SYSRESETREQ resets halt the CPU. Renode hook pitfalls (do not call `machine.Reset()` or assign a plain int to `PC` inside a hook) are in `PROGRESS.md` under Known caveats.
 
 ## Testing model
 
-Three layers, all real code: host unit tests; the host sweep (every flash mutation and byte boundary, 3 torn-erase states, real crypto; invariants: never bricked, old-or-new image only, metadata valid, floor monotonic, converges); Renode suites on the ARM binary. After touching `boot_logic.c`, `metadata.c`, `safeflash_update.c` or `safeflash_app.c`, run the sweep. Its value was validated by mutation testing (`docs/results.md`); keep it able to fail.
+Layers, all over real production code: host unit tests; the host sweep (every flash mutation and byte boundary, 3 torn-erase states, real crypto, incl. a serial-recovery scenario; invariants: never bricked, old-or-new image only, metadata valid, floor monotonic, converges/resumable); fuzz targets in `tests/fuzz` (properties, not just crashes; `fuzz_targets.c` is shared by the portable driver and libFuzzer); the explicit-state model checker in `tests/model` (production `boot_decide`/metadata/confirm/install, crypto abstracted to an oracle, plus a tampering adversary); Renode Robot suites on the ARM binary. After touching `boot_logic.c`, `recovery.c`, `metadata.c`, `safeflash_update.c` or `safeflash_app.c`, run the sweep, the model check and a fuzz run. Every one of these was validated by injecting defects and confirming it fails (`docs/results.md`); keep them able to fail. Note the model checker needs a property to be *observable*: a bug that violates no property (a ratchet stuck at 0) survives, which is why S5 exists.
+
+Renode emulation pitfalls seen here: spinning on a peripheral register is ~100x slower to emulate than plain loops (keep pauses between polls); `emulation CreateServerSocketTerminal ... false` (telnet emulation off) is required for binary data.
 
 ## Constraints to preserve
 

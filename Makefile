@@ -20,7 +20,7 @@ UECC_FLAGS = -DuECC_SUPPORTS_secp160r1=0 -DuECC_SUPPORTS_secp192r1=0 -DuECC_SUPP
 CFLAGS += $(EXTRA_CFLAGS)
 LDFLAGS = -nostartfiles -nostdlib -Wl,--gc-sections
 
-BL_OBJS = $(addprefix $(BUILD)/bl/, startup.o main.o boot_logic.o crc32.o image_verify.o image_crypto.o libc_min.o \
+BL_OBJS = $(addprefix $(BUILD)/bl/, startup.o main.o boot_logic.o recovery.o crc32.o image_verify.o image_crypto.o libc_min.o \
           metadata.o flash_stm32.o sha256.o uECC.o pubkey.o)
 
 .PHONY: all clean
@@ -30,10 +30,10 @@ all: $(BUILD)/bootloader.elf $(BUILD)/app_v1_slotA.img $(BUILD)/app_v2_slotB.img
 $(BUILD)/bl:
 	mkdir -p $@
 
-$(BUILD)/bl/%.o: $(BL_SRC)/%.c | $(BUILD)/bl
+$(BUILD)/bl/%.o: $(BL_SRC)/%.c $(wildcard $(BL_SRC)/*.h) | $(BUILD)/bl
 	$(CC) $(CFLAGS) $(UECC_FLAGS) -c $< -o $@
 
-$(BUILD)/bl/sha256.o: crypto/sha256.c | $(BUILD)/bl
+$(BUILD)/bl/sha256.o: crypto/sha256.c crypto/sha256.h | $(BUILD)/bl
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # Vendored code is compiled unmodified; silence its warnings rather than editing it.

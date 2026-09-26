@@ -90,3 +90,56 @@ For every flash mutation an operation performs: a write is cut after each byte c
 cut in three torn states (never took effect, sector left as garbage, half erased). After the cut the device
 boots and invariants are asserted (see `docs/results.md`). Not modelled: a second power cut during the
 recovery boot (its own metadata writes are covered individually), and real word-granular flash behaviour.
+
+## Serial recovery mode (`bootloader/src/recovery.c`)
+
+When nothing is bootable, or when an app requests it (`sf_request_recovery()` writes a magic word to the top of
+RAM, outside the stack, and resets), the bootloader stops halting and waits for a signed image on USART1.
+
+Framing: `0xA5 | type | len u16 | payload | crc32`, stop-and-wait, with `BEGIN(total length)`, `DATA(offset,
+<=256 bytes)`, `END`, `ABORT` from the host and `ACK(next offset)` / `NAK(reason)` back. Retransmitted `DATA`
+frames are ACKed without being written again, so retries are idempotent, and the receiver resynchronises on the
+start byte after noise or a bad CRC. `tools/recover.py` is the host side (TCP socket for Renode, or a real
+serial port).
+
+Safety properties, each checked by tests (see `docs/results.md`):
+
+- **Verification is not bypassed.** After `END` the bootloader runs the same checks as a normal boot (structure,
+  payload CRC, version floor, payload SHA-256, ECDSA signature) and commits metadata only if they pass. A forged
+  image, or a validly signed image below the anti-rollback floor, is NAKed and nothing changes.
+- **Header last.** The first 1 KB of the image is held in RAM and written to flash only at `END`, so an
+  interrupted transfer never leaves a valid-looking header.
+- **Confined writes.** Only the target slot (the one that is not the active slot) is written, and the metadata
+  sectors only after successful verification. A healthy image in the other slot is never disturbed.
+- **Fail-safe.** A power cut at any point leaves either a bootable verified image or a device that simply comes
+  back up in recovery mode, from which a full transfer succeeds. The sweep checks this at every flash mutation.
+
+Known limits: there is no receive timeout (the device waits indefinitely), the receiver polls rather than using
+interrupts or DMA (fine at 115200 baud, not at high line rates), and if both metadata copies are destroyed the
+anti-rollback floor is lost and restarts at 0.
+
+## Verification methods
+
+The design is checked at several levels, from cheap and broad to precise and narrow:
+
+| Method | What it establishes | Where |
+|---|---|---|
+| Unit tests | Individual functions behave (CRC, SHA-256 vectors, metadata, header checks) | `tests/unit` |
+| Power-cut sweep | Recovery from a cut at every flash mutation and byte boundary of install, confirm, boot writes and recovery, with real crypto | `tests/unit/fault_sweep.c` |
+| Fuzzing | Untrusted inputs (images, metadata, whole-device state, install blobs, recovery streams) never break safety properties | `tests/fuzz` |
+| Model checking | Every reachable device state, under every interleaving of boot, confirm, install and tampering, with power cuts | `tests/model` |
+| Emulated firmware | The compiled ARM binary behaves the same in Renode, including real power cuts and the serial protocol | `sim/robot` |
+| Static analysis | cppcheck (warnings, portability, performance, style) is clean | CI |
+
+Each dynamic check was itself validated by injecting defects into the production code and confirming it fails.
+
+The model checker (`tests/model/model_check.c`) drives the production `boot_decide`, metadata, confirm and install
+code against an abstract world in which only the cryptography is replaced by an oracle over slot contents
+(invalid, valid v1-v3, forged). It checks: the booted slot always holds a valid image at or above the floor (S1),
+the floor never decreases (S2), a valid metadata copy always survives a power cut (S3), the running slot is never
+modified (S4), a successful confirm really raises the floor and leaves trial (S5), boot fails only when nothing
+legitimately bootable exists (L1), and an app that never confirms cannot loop forever (L2). A property such as S5
+matters because a "floor stays at zero forever" bug violates no safety property: this was found when a mutation
+survived the first version of the checker. Likewise the checker needed a tampering adversary (overwrite a slot
+with any content at rest) before it could observe the value of the floor check in the boot path, which is
+defence in depth against flash being written directly.

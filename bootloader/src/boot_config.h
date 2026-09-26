@@ -11,4 +11,12 @@
  */
 #define TRIAL_WDT_MS    2000u
 
+/*
+ * Recovery request: an app (or a test) writes this magic to the reserved word at the top of RAM (outside the
+ * stack, see the linker scripts) and resets; the bootloader consumes it and enters serial recovery mode even
+ * though a bootable image exists. Recovery also starts on its own when nothing is bootable.
+ */
+#define RECOVERY_REQUEST_ADDR   0x2001FFF0u
+#define RECOVERY_REQUEST_MAGIC  0x52435652u   /* "RVCR" */
+
 #endif

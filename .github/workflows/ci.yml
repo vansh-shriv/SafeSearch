@@ -6,7 +6,7 @@ on:
 
 jobs:
   host:
-    # Firmware build, host unit tests, and the exhaustive power-cut sweep. No emulator needed.
+    # Firmware build, host tests, exhaustive power-cut sweep, model check, fuzz smoke run. No emulator needed.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -22,14 +22,63 @@ jobs:
         run: make TC_BIN=/usr/bin PY=python
       - name: Unit tests
         run: make -C tests/unit test
+      - name: Recovery tests
+        run: make -C tests/unit recovery
       - name: Exhaustive power-cut sweep
         run: make -C tests/unit sweep
       - name: Sweep summary
         run: python tools/summarize_sweep.py | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Model check (explicit-state, all reachable device states)
+        run: make -C tests/model check
+      - name: Fuzz smoke run (portable mutation driver)
+        run: make -C tests/fuzz run ITERS=20000
       - uses: actions/upload-artifact@v4
         with:
           name: fault-sweep-csv
           path: build/fault_sweep.csv
+
+  analysis:
+    # Static analysis, sanitizers, and coverage-guided fuzzing (libFuzzer) on the same code.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi make gcc clang cppcheck
+          python -m pip install cryptography
+      - name: cppcheck (warnings, portability, performance, style; vendored micro-ecc excluded)
+        run: |
+          cppcheck --enable=warning,portability,performance,style --inline-suppr --std=c99 --error-exitcode=1 -q \
+            --suppress='comparePointers:*/startup.c' -Ibootloader/src -Iapp/src -Icrypto \
+            bootloader/src app/src crypto/sha256.c
+      - name: Build firmware
+        run: make TC_BIN=/usr/bin PY=python
+      - name: Unit, recovery and sweep under AddressSanitizer + UBSan
+        run: |
+          make -C tests/unit clean
+          make -C tests/unit test SAN=1
+          make -C tests/unit recovery SAN=1
+          make -C tests/unit sweep SAN=1
+      - name: libFuzzer binaries (ASan + UBSan)
+        run: make -C tests/fuzz libfuzzer CC=clang
+      - name: Seed corpora
+        run: python tests/fuzz/gen_corpus.py
+      - name: Fuzz each target for 45 s
+        working-directory: tests/fuzz
+        run: |
+          for t in fuzz_image fuzz_metadata fuzz_boot fuzz_install fuzz_recovery; do
+            echo "== $t"
+            ./$t corpus/$t -max_total_time=45 -max_len=8192 -rss_limit_mb=2048 -print_final_stats=1
+          done
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-crashes
+          path: tests/fuzz/crash-*
 
   renode:
     # Robot Framework suites on the emulated STM32F4. Developed against Renode 1.16 on Windows and confirmed
@@ -53,7 +102,7 @@ jobs:
       - name: Generate test artifacts
         run: python tests/renode/gen_artifacts.py
       - name: Robot suites
-        run: ./renode/renode-test sim/robot/signature.robot sim/robot/trial.robot sim/robot/ota.robot sim/robot/powercut.robot -r build/robot
+        run: ./renode/renode-test sim/robot/signature.robot sim/robot/trial.robot sim/robot/ota.robot sim/robot/powercut.robot sim/robot/recovery.robot -r build/robot
       - uses: actions/upload-artifact@v4
         if: always()
         with:

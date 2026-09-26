@@ -26,6 +26,9 @@
 
 int sf_confirm_healthy(void);
 void sf_wdt_kick(void);
+
+/* Reboot into the bootloader's serial recovery mode (does not return). */
+void sf_request_recovery(void);
 int sf_install_update(const void *img, size_t len);
 
 #endif

@@ -3,3 +3,15 @@ build/
 keys/
 *.o
 build_nosig/
+*.gcda
+*.gcno
+*.gcov
+tests/fuzz/cov/
+tests/fuzz/corpus/
+tests/fuzz/crash-*
+tests/fuzz/fuzz_image
+tests/fuzz/fuzz_metadata
+tests/fuzz/fuzz_boot
+tests/fuzz/fuzz_install
+tests/fuzz/fuzz_recovery
+tests/model/model_check.exe

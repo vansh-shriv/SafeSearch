@@ -1,4 +1,5 @@
 #include "safeflash_app.h"
+#include "boot_config.h"
 #include "flash_hal.h"
 #include "flash_map.h"
 #include "image_verify.h"
@@ -34,6 +35,14 @@ int sf_confirm_healthy(void)
     kick_inited = 1;
     kick_allowed = 1;
     return 0;
+}
+
+void sf_request_recovery(void)
+{
+    *(volatile uint32_t *)RECOVERY_REQUEST_ADDR = RECOVERY_REQUEST_MAGIC;
+    *(volatile uint32_t *)0xE000ED0Cu = 0x05FA0004u;   /* SCB->AIRCR: SYSRESETREQ */
+    for (;;)
+        ;
 }
 
 void sf_wdt_kick(void)

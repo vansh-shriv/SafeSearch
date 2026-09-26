@@ -16,6 +16,6 @@
 extern const uint8_t safeflash_pubkey[64];
 
 /* Checks payload SHA-256 against the header, then the ECDSA signature. Header must already be structurally valid. */
-img_status_t image_check_signature(uint32_t slot_addr, const image_header_t *h);
+img_status_t image_check_signature(uint32_t slot_base, const image_header_t *h);
 
 #endif

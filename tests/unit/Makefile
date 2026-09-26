@@ -9,6 +9,11 @@ UECC = $(CRYPTO)/micro-ecc
 BUILD = ../../build
 
 CFLAGS = -std=c99 -D__USE_MINGW_ANSI_STDIO=1 -Wall -Wextra -Werror -O2 -g -I$(SRC) -I$(APP) -I$(CRYPTO) -I$(UECC) -I.
+# SAN=1 builds the tests with AddressSanitizer + UBSan (gcc/clang on Linux; MinGW has no sanitizers)
+ifdef SAN
+CFLAGS += -fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer
+endif
+
 UECC_FLAGS = -DuECC_SUPPORTS_secp160r1=0 -DuECC_SUPPORTS_secp192r1=0 -DuECC_SUPPORTS_secp224r1=0 \
              -DuECC_SUPPORTS_secp256r1=1 -DuECC_SUPPORTS_secp256k1=0 -DuECC_SUPPORT_COMPRESSED_POINT=0
 
@@ -19,13 +24,23 @@ endif
 
 UNIT_SRCS =test_main.c mock_flash.c $(SRC)/crc32.c $(SRC)/metadata.c $(SRC)/image_verify.c $(CRYPTO)/sha256.c
 
-SWEEP_SRCS = fault_sweep.c mock_flash.c $(SRC)/crc32.c $(SRC)/metadata.c $(SRC)/image_verify.c \
+SWEEP_SRCS = fault_sweep.c recovery_env.c $(SRC)/recovery.c mock_flash.c $(SRC)/crc32.c $(SRC)/metadata.c $(SRC)/image_verify.c \
              $(SRC)/image_crypto.c $(SRC)/boot_logic.c $(CRYPTO)/sha256.c \
              $(APP)/safeflash_app.c $(APP)/safeflash_update.c
 
-.PHONY: test sweep clean
+RECOVERY_SRCS = recovery_test.c recovery_env.c mock_flash.c $(SRC)/crc32.c $(SRC)/metadata.c \
+                $(SRC)/image_verify.c $(SRC)/image_crypto.c $(SRC)/boot_logic.c $(SRC)/recovery.c \
+                $(CRYPTO)/sha256.c $(APP)/safeflash_app.c $(APP)/safeflash_update.c
+
+.PHONY: test sweep recovery clean
 test: test_main.exe
 	./test_main.exe
+
+recovery: recovery_test.exe
+	./recovery_test.exe
+
+recovery_test.exe: $(RECOVERY_SRCS) uecc_host.o $(BUILD)/pubkey.c $(wildcard *.h) $(wildcard $(SRC)/*.h) $(wildcard $(APP)/*.h)
+	$(CC) $(CFLAGS) $(UECC_FLAGS) $(RECOVERY_SRCS) $(BUILD)/pubkey.c uecc_host.o $(LDLIBS) -o $@
 
 sweep: fault_sweep.exe
 	./fault_sweep.exe

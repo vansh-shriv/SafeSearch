@@ -31,7 +31,7 @@ typedef enum {
  * Structural validation only (magic, header CRC, size bounds, version floor,
  * payload CRC). Cryptographic verification is a separate step (Phase 3).
  */
-img_status_t image_check_basic(uint32_t slot_addr, uint32_t min_allowed_version,
+img_status_t image_check_basic(uint32_t slot_base, uint32_t min_allowed_version,
                                image_header_t *hdr_out);
 
 #endif
