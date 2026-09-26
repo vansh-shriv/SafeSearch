@@ -19,7 +19,7 @@ UECC_FLAGS = -DuECC_SUPPORTS_secp160r1=0 -DuECC_SUPPORTS_secp192r1=0 -DuECC_SUPP
              -DuECC_SUPPORTS_secp256r1=1 -DuECC_SUPPORTS_secp256k1=0 -DuECC_SUPPORT_COMPRESSED_POINT=0
 LDFLAGS = -nostartfiles -nostdlib -Wl,--gc-sections
 
-BL_OBJS = $(addprefix $(BUILD)/bl/, startup.o main.o crc32.o image_verify.o image_crypto.o libc_min.o \
+BL_OBJS = $(addprefix $(BUILD)/bl/, startup.o main.o boot_logic.o crc32.o image_verify.o image_crypto.o libc_min.o \
           metadata.o flash_stm32.o sha256.o uECC.o pubkey.o)
 
 .PHONY: all clean
@@ -53,7 +53,7 @@ $(BUILD)/bootloader.elf: $(BL_OBJS) bootloader/linker/bootloader.ld
 	$(CC) $(CFLAGS) $(LDFLAGS) -Tbootloader/linker/bootloader.ld $(BL_OBJS) -o $@
 
 # Apps link the SafeFlash app library (confirm_healthy / watchdog gating), which needs the metadata + flash driver.
-APP_SRCS = app/src/startup.c app/src/main.c app/src/safeflash_app.c            $(BL_SRC)/metadata.c $(BL_SRC)/crc32.c $(BL_SRC)/flash_stm32.c $(BL_SRC)/libc_min.c
+APP_SRCS = app/src/startup.c app/src/main.c app/src/safeflash_app.c app/src/safeflash_update.c $(BL_SRC)/metadata.c $(BL_SRC)/crc32.c $(BL_SRC)/flash_stm32.c $(BL_SRC)/libc_min.c
 
 # APP_RULE(name, version, linker script, extra flags): builds build/<name>.elf and the signed build/<name>.img
 define APP_RULE

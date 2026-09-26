@@ -1,0 +1,32 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  host:
+    # Firmware build, host unit tests, and the exhaustive power-cut sweep. No emulator needed.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install toolchain and Python deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi make gcc
+          python -m pip install cryptography
+      - name: Build firmware (generates a throwaway dev key)
+        run: make TC_BIN=/usr/bin PY=python
+      - name: Unit tests
+        run: make -C tests/unit test
+      - name: Exhaustive power-cut sweep
+        run: make -C tests/unit sweep
+      - name: Sweep summary
+        run: python tools/summarize_sweep.py | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fault-sweep-csv
+          path: build/fault_sweep.csv

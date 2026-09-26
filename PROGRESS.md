@@ -4,96 +4,71 @@ Spec: `safeflash-spec-simulator.md`. Update this file at the end of every work s
 
 ## Current status
 
-**Phases 0-4 done and verified under Renode (boot, metadata slot selection/fallback, signed images, trial boot + watchdog + automatic revert).**
-Next up: Phase 5 (OTA staging simulation + anti-rollback ratchet).
+**Phases 0-5 done and verified. Phase 6 in progress: host exhaustive fault sweep done (2,803 fault points, 0 violations, harness mutation-tested). Still to do: Renode-level power cuts on the real binary, CI, README/design/results docs, cycle-count metrics.**
 
 ## Environment (verified 2026-09-26)
 
 | Tool | State |
 |---|---|
-| Renode 1.16.0 | `C:\Program Files\Renode\bin\Renode.exe` (not on PATH). Downloads the STM32F40x SVD on first run (needs network once, then cached) |
-| Arm GNU Toolchain 12.2 (arm-none-eabi-gcc) | `C:\Program Files (x86)\Arm GNU Toolchain arm-none-eabi\12.2 mpacbti-rel1\bin` (not on PATH; Makefile has it as `TC_BIN`) |
-| MinGW gcc 6.3 + `mingw32-make` | `C:\MinGW\bin` (not on PATH). Host unit tests + top-level build |
-| Python 3.12 (conda `tf_env`) + `cryptography` 50.0.1 | Installed. Use `python -m pip`, NOT bare `pip` (that is a different Python) |
+| Renode 1.16.0 | `C:\Program Files\Renode\bin\Renode.exe` (not on PATH). Downloads the STM32F40x SVD on first run (network once, then cached) |
+| Arm GNU Toolchain 12.2 (arm-none-eabi-gcc) | `C:\Program Files (x86)\Arm GNU Toolchain arm-none-eabi\12.2 mpacbti-rel1\bin` (not on PATH; Makefile `TC_BIN`) |
+| MinGW gcc 6.3 (32-bit) + `mingw32-make` | `C:\MinGW\bin` (not on PATH). Host unit tests, fault sweep, top-level build |
+| Python 3.12 (conda `tf_env`) + `cryptography` 50.0.1 | Use `python -m pip`, NOT bare `pip` (different interpreter) |
 | QEMU | Not installed (only needed as Renode fallback) |
 
-Renode platform facts (`platforms/cpus/stm32f4.repl`): flash 2 MB @ `0x08000000` via `STM32F4_FlashController`, SRAM 256 KB @ `0x20000000`, IWDG @ `0x40003000`, USART1 @ `0x40011000`. We use `platforms/boards/stm32f4_discovery.repl`.
+Renode platform facts (`platforms/cpus/stm32f4.repl`): flash 2 MB @ `0x08000000` via `STM32F4_FlashController`, SRAM 256 KB @ `0x20000000`, IWDG @ `0x40003000`, USART1 @ `0x40011000`. Board: `platforms/boards/stm32f4_discovery.repl`.
 
-## Decisions made
+## Architecture decisions
 
-- Target part: **STM32F4 (Renode `stm32f4.repl`, 2 MB flash)**. Spec §8 open decision 1 resolved.
-- Flash map (`bootloader/src/flash_map.h`): bootloader sectors 0-1 (32 KB), metadata A/B in sectors 2/3, sector 4 unused, Slot A = sectors 5-7 @ `0x08020000` (384 KB), Slot B = sectors 8-10 @ `0x08080000` (384 KB). Image header at slot start padded to `0x400`, vector table follows. Apps are position-dependent: separate linker scripts per slot.
-- Flash access goes through `flash_hal.h` (read / erase_sector / write). Host tests use a RAM mock, target uses the STM32F4 flash controller.
-- Metadata CRC covers all fields before `crc32`. `seq` comparison is wrap-safe.
-- Payload CRC streamed in 256-byte chunks to keep bootloader RAM small.
-- Freestanding bootloader ships its own `memcpy/memset/memcmp` (`libc_min.c`) since the compiler emits calls for struct copies.
-- Slot images are built by `tools/pack_image.py` (CRC-only header, sha256/signature zeroed). Phase 3 replaces it with `sign_image.py`.
-- Robot tests should use Renode's terminal tester on USART1. Ad-hoc runs use a file backend in `%TEMP%\safeflash` because Renode `@path` syntax cannot handle spaces in this repo's path, and relative file-backend paths are not resolved against the repo.
+- Target: **STM32F4 (Renode `stm32f4.repl`, 2 MB flash)**.
+- Flash map (`bootloader/src/flash_map.h`): bootloader sectors 0-1 (32 KB), metadata A/B in sectors 2/3, sector 4 unused, Slot A = sectors 5-7 @ `0x08020000`, Slot B = sectors 8-10 @ `0x08080000` (384 KB each). Image header padded to `0x400` at slot start, vector table after. Apps are position-dependent: one linker script per slot.
+- All flash access goes through `flash_hal.h`. Target: `flash_stm32.c`. Host: `tests/unit/mock_flash.c` (can cut power at any mutation / byte, torn erase patterns, trace, snapshots).
+- **Boot decision is hardware-independent** (`bootloader/src/boot_logic.c`) and is compiled unchanged into both the bootloader and the host fault sweep. `main.c` only does UART, watchdog arm and the jump.
+- Trust model (`image_crypto.h`): ECDSA P-256 signature over SHA-256 of the first 48 header bytes (magic, version, size, crc32, payload sha256). Payload bound via the sha256 field. Public key baked in from `build/pubkey.c` (generated from gitignored `keys/private.pem`).
+- Trial policy: bootloader persists `trial_count` BEFORE jumping, arms IWDG (`TRIAL_WDT_MS` 2000). In TRIAL, `sf_wdt_kick()` refuses to kick until `sf_confirm_healthy()` succeeds, so an image that runs but never confirms is still reset (bounded trial). After `MAX_TRIALS` (3) attempts the bootloader reverts to the other slot (which must verify and satisfy the floor). `BOOT_STATE_REVERT_PENDING` exists in the enum but is unused.
+- Anti-rollback: `sf_confirm_healthy()` ratchets `min_allowed_version` up to the running image's version (same metadata commit as TRIAL->CONFIRMED). Bootloader rejects images below the floor; `sf_install_update()` refuses them up front.
+- Update path (`app/src/safeflash_update.c`): erase inactive slot, program payload, program header last, then atomically commit metadata (active=new, TRIAL). Never touches the running slot. It does not verify the signature; the bootloader does and reverts on failure (found by mutation testing: the fallback also makes the write order non-critical for safety, but the design keeps the safe order anyway).
+- Simulated OTA transport: host drops `{'STGE', len, image}` into RAM at `0x20020000`; the app installs it and issues SYSRESETREQ. Documented simplification: transport is out of scope, the update mechanism is under test.
+- Slot images by `tools/sign_image.py`; keys by `tools/keytool.py`; test metadata blobs by `tools/mkmeta.py`.
 
 ## Done
 
-- [x] Read spec, wrote `CLAUDE.md`
-- [x] Installed Arm toolchain + Python `cryptography`
-- [x] Repo scaffold per spec §7
-- [x] `crc32`, `metadata.c` (ping-pong), `image_verify.c` (`image_check_basic`), all hardware-independent
-- [x] Host unit tests: 22 checks pass, including exhaustive power-cut sweep of `metadata_store` (126 cut points, 0 bad)
-- [x] Linker scripts (bootloader, app slot A/B), startup, UART helper, bootloader `main.c`, demo app
-- [x] Top-level `Makefile` builds bootloader (868 B) + app v1 for slot A + app v2 for slot B, wrapped as `.img`
-- [x] `sim/boot.resc` + `sim/run.ps1`: **verified under Renode**: reset -> BL validates slot A (CRC) -> jumps -> app prints its version:
-  ```
-  SafeFlash BL
-  BL: slot A: ok
-  BL: jumping to version 0x00000001
-  APP: running, version 1
-  ```
-
-- [x] Phase 2: `flash_stm32.c` (unlock, sector erase, word programming with 0xFF-padded head/tail) works against Renode's `STM32F4_FlashController`
-- [x] Phase 2: bootloader loads metadata, initialises it on first boot (slot A, NORMAL, floor 0), falls back to the other slot if the active one fails checks and persists the switch
-- [x] Verified under Renode (ad-hoc, via `sim/run.ps1 -Steps`): flash contents survive `machine Reset`; second boot reads metadata seq 1 without re-init; corrupting Slot A payload -> "bad image crc" -> falls back to B, seq 2 stored, next reset boots B directly. Resolves the earlier open question about flash surviving reset. Note: after `machine Reset` the script must re-set `sysbus.cpu VectorTableOffset 0x08000000`
-- [x] Repo pushed to https://github.com/vansh-shriv/SafeSearch.git (branch `main`). User authorised periodic commits there. Commit + push at the end of each milestone
-
-- [x] Phase 3: SHA-256 (`crypto/sha256.c`, own implementation, known-answer tests incl. 1M 'a') + vendored micro-ecc P-256 verify (`crypto/micro-ecc/`, upstream commit in `VENDORED.txt`, compiled with `-w`, unmodified)
-- [x] `tools/keytool.py` (gen keypair into gitignored `keys/`, emit `build/pubkey.c`), `tools/sign_image.py` (replaces `pack_image.py`). `make` auto-generates a dev key if none exists
-- [x] Trust model (documented in `image_crypto.h`): signature = ECDSA P-256 over SHA-256 of the first 48 header bytes (magic, version, size, crc32, payload sha256). Payload bound via the sha256 field. So version/size/hash tampering breaks the signature
-- [x] Bootloader now runs structural checks, then payload hash + signature, before any jump. Size with crypto: 6.4 KB of 32 KB
-- [x] `tests/renode/test_signature.py`: 6/6 pass under Renode. Attack images have all unkeyed CRCs recomputed so only crypto can reject them: stale hash, stale signature, version bump, wrong key, zeroed signature (+ valid control). Each is rejected with the expected reason and the bootloader falls back to genuine v2 in slot B
-- [x] Host unit tests now 26 checks (SHA-256 vectors added)
-
-- [x] Phase 4: TRIAL boot, `sf_confirm_healthy()` / `sf_wdt_kick()` app library (`app/src/safeflash_app.c`), IWDG trial watchdog, trial counter, automatic revert. Config in `bootloader/src/boot_config.h` (`MAX_TRIALS` 3, `TRIAL_WDT_MS` 2000)
-  - Design: bootloader increments `trial_count` and persists it BEFORE jumping, then arms the IWDG (cannot be stopped). In TRIAL, `sf_wdt_kick()` refuses to kick until `sf_confirm_healthy()` succeeds, so an image that runs but never confirms is still reset at the end of the window (bounded trial, not just hang detection). On the boot where `trial_count >= MAX_TRIALS` the bootloader reverts to the other slot (must verify, and satisfy the version floor), sets CONFIRMED, count 0
-  - A failed/interrupted `sf_confirm_healthy()` metadata write leaves TRIAL, so worst case is a revert, never an unsafe state
-  - `BOOT_STATE_REVERT_PENDING` exists in the enum but is not used by this design
-- [x] `tests/renode/test_trial.py`: 12/12 pass under Renode. Good v2 confirms and survives well past the window and a reset; bad v3 (`-DAPP_CONFIRM=0`) gets exactly 3 watchdog-reset trials, then reverts to slot A (v1) and stays there. Signature suite still 6/6
-- [x] `tools/mkmeta.py` builds raw metadata blobs for staging test states (loaded via Renode `LoadBinary`)
-- [x] `sim/boot.resc` now defines a `reset` macro (sets VTOR to the bootloader after any reset). Without it an IWDG reset leaves the CPU at address 0 and it halts. `sim/run.ps1` gained `-Pre` (commands before the first run)
+- Phase 0-1: toolchain + Renode running; linker scripts, startup, UART, bootloader jump; Makefile
+- Phase 2: ping-pong metadata (`metadata.c`), STM32F4 flash driver, slot selection + fallback. Verified: flash survives `machine Reset`
+- Phase 3: SHA-256 (own, known-answer tested incl. 1M 'a'), vendored micro-ecc P-256 (`crypto/micro-ecc`, upstream commit in `VENDORED.txt`), sign/keygen tools. `tests/renode/test_signature.py` 6/6 (attack images with self-consistent CRCs: stale hash, stale signature, version bump, wrong key, zero signature)
+- Phase 4: trial boot, confirm, IWDG revert. `tests/renode/test_trial.py` 12/12
+- Phase 5: installer, ratchet, OTA. `tests/renode/test_ota.py` 8/8 (OTA v1->v2 with trial + confirm + floor 2; installer refuses signed v1 below floor (rc -3); bootloader refuses v1 below floor even if metadata points at it; evil OTA with bad signature installed then rejected by bootloader and reverted)
+- Phase 6 (host): `tests/unit/fault_sweep.c` (`mingw32-make -C tests/unit sweep`, ~12 s). Real production code + real crypto vs mock flash, power cut at EVERY flash mutation and every byte boundary inside each write and 3 torn-erase states each. Scenarios: OTA install (2,707 points), confirm, bootloader first-boot init, trial-counter increment, revert commit (24 each). Total **2,803 distinct fault points, 0 violations**. Invariants: always boots a verified image (never bricked); image is old or new only; metadata valid after boot; floor never decreases and never exceeds running version; converges (confirmed or reverted). Every (cut point -> outcome) row is in `build/fault_sweep.csv`; `tools/summarize_sweep.py` prints the table
+- **Harness validated by mutation testing** (so 0 violations is meaningful): installer erasing the ACTIVE slot -> 2,705/2,707 violations (bricked); metadata rewritten in place instead of ping-pong -> 88 violations (floor decreased). Misordering install (metadata before image write) is NOT a violation because the bootloader fallback reverts a torn image; that is by design
 
 ## In progress / next
 
-- [ ] Phase 5: staged-image OTA simulation (host script writes signed image to the inactive slot + metadata TRIAL), anti-rollback version ratchet (raise `min_allowed_version` on confirm; app needs to know its own version), Renode tests for rollback attempt (old signed v1 written back after v3 confirmed)
-- [ ] Turn the Renode checks into Robot Framework tests (`sim/robot/`) using the terminal tester; currently Python driving `sim/run.ps1`
-- [ ] Measure boot time / verify cost in emulated cycles (Phase 6 metrics). Not measured yet, so no numbers are claimed
-
-## Later (per spec §6)
-
-- Phase 6: Robot Framework suites, exhaustive Renode fault injection, CSV results, GitHub Actions CI, README/design/results docs
+- [ ] Renode-level power cuts on the real binary (PC hook on the flash driver's word-program function, reset at chosen addresses), to cross-check the host sweep on the actual firmware
+- [ ] GitHub Actions CI (unit tests + sweep on host; Renode suites need Renode installed on the runner)
+- [ ] Metrics: boot time and verify cost in emulated cycles/instructions (not yet measured; no numbers claimed). Bootloader/app sizes are real: bootloader ~6.7 KB (of 32 KB), apps ~1.1-1.6 KB
+- [ ] `README.md`, `docs/design.md` (with explicit simulator-only scope section), `docs/results.md`
+- [ ] Optionally convert Python-driven Renode suites to Robot Framework (`sim/robot/`)
 
 ## Known caveats
 
-- Mock flash models an interrupted erase as random garbage and an interrupted write as a byte-prefix. Real STM32 programming is word-granular, so this is a superset for byte writes.
-- Unit tests run only on host; Renode coverage so far is the single happy-path boot above.
-- Renode's flash controller ignores PSIZE and the SR error bits (it logs "Unhandled write" warnings for them), so flash error paths in `flash_stm32.c` cannot be exercised in the emulator.
-- Renode speed: a spinning app costs wall time per emulated second (~2-3 s wall per emulated second with the rate-limited kick loop). Avoid tight loops that hit peripheral registers every iteration (a per-iteration IWDG kick made 4 emulated s take 166 s wall).
-- Renode's flash controller may not model real erase/program timing or the "code stalls while flash busy" behaviour, so partial-erase/partial-write fault windows need to be injected by us (reset at chosen PC/instruction counts), not expected to occur naturally.
-- Shell: long bash heredocs fail here; use the Write tool for multi-line files. Use `cmd /c "mingw32-make 2>&1"` in PowerShell to avoid stderr being turned into errors.
+- Renode's flash controller ignores PSIZE and SR error bits ("Unhandled write" warnings), so flash error paths in `flash_stm32.c` are not exercised.
+- Renode programs a word atomically, so torn-word programming is only modelled in the host sweep (byte-granular prefix, a superset of real word-granular behaviour). Torn-erase patterns are modelled host-side only.
+- Host sweep does not nest faults (a second cut during the recovery boot after a first cut). The recovery boot's own metadata writes are covered individually by the `boot_*` scenarios.
+- Metadata is CRC-protected, not authenticated: an attacker who can write flash directly can forge it (including the floor). Out of scope, same as the spec's threat model (image authenticity, not flash-bus tampering).
+- Renode speed: a spinning app costs wall time per emulated second (~2-3 s wall per emulated s). Never hit peripheral registers every loop iteration (a per-iteration IWDG kick made 4 emulated s take 166 s).
+- Shell: long bash heredocs with backslashes are unreliable here (a `\\n` became a real newline); use the Write/Edit tools for multi-line files. Use `cmd /c "mingw32-make 2>&1"` in PowerShell.
 
 ## Commands that work today
 
 ```
 # PowerShell, from repo root
 $env:Path = "C:\MinGW\bin;" + $env:Path
-mingw32-make -C tests/unit test        # host unit tests
+mingw32-make -C tests/unit test        # host unit tests (26 checks)
 mingw32-make                           # build firmware into build/ (creates keys/private.pem on first run)
-powershell -NoProfile -File sim/run.ps1 -Seconds 2     # boot in Renode, print UART (ECDSA verify needs ~1-2 simulated s)
-python tests/renode/test_signature.py  # attack-image tests under Renode (needs `make` first)
+mingw32-make -C tests/unit sweep       # exhaustive power-cut sweep, writes build/fault_sweep.csv
+python tools/summarize_sweep.py        # results table from the CSV
+powershell -NoProfile -File sim/run.ps1 -Seconds 2     # boot in Renode, print UART
+python tests/renode/test_signature.py  # attack images under Renode (needs `make` first)
 python tests/renode/test_trial.py      # trial/confirm/watchdog/revert under Renode (~3-4 min)
+python tests/renode/test_ota.py        # OTA install, ratchet, anti-rollback under Renode (~3 min)
 ```
