@@ -4,8 +4,8 @@ Spec: `safeflash-spec-simulator.md`. Update this file at the end of every work s
 
 ## Current status
 
-**Phase 0 done. Phase 1 done (under Renode). Phase 2 host logic done and unit-tested; target flash driver + metadata-driven slot selection not yet done.**
-Next up: STM32F4 flash driver (`flash_hal` over FLASH controller regs), then boot using metadata to pick slot A/B.
+**Phases 0, 1, 2 done and verified under Renode.**
+Next up: Phase 3 (SHA-256 + ECDSA P-256 signature verification, `sign_image.py`).
 
 ## Environment (verified 2026-09-26)
 
@@ -47,12 +47,15 @@ Renode platform facts (`platforms/cpus/stm32f4.repl`): flash 2 MB @ `0x08000000`
   APP: running, version 1
   ```
 
+- [x] Phase 2: `flash_stm32.c` (unlock, sector erase, word programming with 0xFF-padded head/tail) works against Renode's `STM32F4_FlashController`
+- [x] Phase 2: bootloader loads metadata, initialises it on first boot (slot A, NORMAL, floor 0), falls back to the other slot if the active one fails checks and persists the switch
+- [x] Verified under Renode (ad-hoc, via `sim/run.ps1 -Steps`): flash contents survive `machine Reset`; second boot reads metadata seq 1 without re-init; corrupting Slot A payload -> "bad image crc" -> falls back to B, seq 2 stored, next reset boots B directly. Resolves the earlier open question about flash surviving reset. Note: after `machine Reset` the script must re-set `sysbus.cpu VectorTableOffset 0x08000000`
+- [x] Repo pushed to https://github.com/vansh-shriv/SafeSearch.git (branch `main`). User authorised periodic commits there. Commit + push at the end of each milestone
+
 ## In progress / next
 
-- [ ] Phase 2: target `flash_hal` over STM32F4 FLASH controller (KEYR unlock, SR/CR, sector erase, program), verify against Renode's `STM32F4_FlashController`
-- [ ] Phase 2: bootloader uses `metadata_load` to pick slot; seed initial metadata (first boot with no valid copy -> slot A, TRIAL/NORMAL policy)
-- [ ] Phase 2 test in Renode: load different apps in A/B, flip metadata, confirm the right one boots
-- [ ] Negative test under Renode: corrupted image is rejected (currently only host unit-tested)
+- [ ] Phase 3: SHA-256 + micro-ecc P-256 verify in bootloader, `tools/sign_image.py`, keypair generation, unit tests on host (sign in Python, verify in C), then Renode bad-signature test
+- [ ] Turn the ad-hoc Renode checks above into Robot Framework tests (`sim/robot/`) using the terminal tester
 
 ## Later (per spec §6)
 
@@ -65,7 +68,7 @@ Renode platform facts (`platforms/cpus/stm32f4.repl`): flash 2 MB @ `0x08000000`
 
 - Mock flash models an interrupted erase as random garbage and an interrupted write as a byte-prefix. Real STM32 programming is word-granular, so this is a superset for byte writes.
 - Unit tests run only on host; Renode coverage so far is the single happy-path boot above.
-- Not yet checked: whether flash contents survive `machine Reset` in Renode (matters for fault injection in Phase 6).
+- Renode's flash controller may not model real erase/program timing or the "code stalls while flash busy" behaviour, so partial-erase/partial-write fault windows need to be injected by us (reset at chosen PC/instruction counts), not expected to occur naturally.
 - Shell: long bash heredocs fail here; use the Write tool for multi-line files. Use `cmd /c "mingw32-make 2>&1"` in PowerShell to avoid stderr being turned into errors.
 
 ## Commands that work today
