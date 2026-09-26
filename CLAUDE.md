@@ -16,13 +16,11 @@ mingw32-make -C tests/unit test         # host unit tests (26 checks)
 mingw32-make -C tests/unit sweep        # exhaustive host power-cut sweep -> build/fault_sweep.csv (~12 s); needs `mingw32-make` first
 python tools/summarize_sweep.py         # CSV -> results table
 powershell -NoProfile -File sim/run.ps1 -Seconds 2   # headless Renode boot, prints USART1
-python tests/renode/test_signature.py   # attack images with self-consistent CRCs
-python tests/renode/test_trial.py       # trial boot / confirm / IWDG revert (a few minutes)
-python tests/renode/test_ota.py         # OTA install, ratchet, anti-rollback
-python tests/renode/test_powercut.py    # power cuts on the real ARM binary (--quick for a subset)
+powershell -NoProfile -File sim/run_robot.ps1                      # all Robot suites under Renode (~2 min)
+powershell -NoProfile -File sim/run_robot.ps1 -Suite ota,powercut  # a subset (signature, trial, ota, powercut)
 python tests/renode/measure_boot.py     # emulated instruction counts (needs the build_nosig bootloader, see script header)
 ```
-The Renode suites drive `sim/run.ps1`, which takes `-Seconds`, `-Steps "<monitor cmds run after the first RunFor>"`, `-Pre "<monitor cmds before it>"`, `-SlotA/-SlotB build/x.img`. They all share `%TEMP%\safeflash\uart.log` (Renode `@path` arguments break on spaces in this repo's path), so never run two at once. Renode is `C:\Program Files\Renode\bin\Renode.exe`; the Arm toolchain path is `TC_BIN` in the `Makefile`. Use `python -m pip`, not bare `pip` (different interpreter). There is no single-test runner: each Renode script is one suite, and the unit test is one executable.
+`sim/run_robot.ps1` runs `tests/renode/gen_artifacts.py` (attack images, OTA blobs, metadata blobs, hook addresses into `build/robot_art/`) then Renode's `renode-test` on `sim/robot/*.robot`; keywords live in `sim/robot/safeflash.resource`. It sets `PYTHONIOENCODING=utf-8` (Robot 6.1 breaks on the default `utf-8:surrogateescape`) and needs the one-time `py -3 -m pip install robotframework==6.1 robotframework-retryfailed==0.2.0 psutil pyyaml telnetlib3`. For ad-hoc UART output use `sim/run.ps1`, which takes `-Seconds`, `-Steps "<monitor cmds run after the first RunFor>"`, `-Pre "<monitor cmds before it>"`, `-SlotA/-SlotB build/x.img`. It logs UART to `%TEMP%\safeflash\uart.log` (Renode `@path` arguments break on spaces in this repo's path), so do not run two at once. Robot suites use Renode's terminal tester and are unaffected; inside them, `path add` on the repo root makes the relative `build/...` paths in `sim/boot.resc` resolve. Renode is `C:\Program Files\Renode\bin\Renode.exe`; the Arm toolchain path is `TC_BIN` in the `Makefile`. Use `python -m pip`, not bare `pip` (different interpreter). There is no single-test runner: each Renode script is one suite, and the unit test is one executable.
 
 Use the Write/Edit tools for multi-line files; long bash heredocs with backslashes are unreliable in this environment.
 

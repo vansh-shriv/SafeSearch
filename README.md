@@ -21,8 +21,8 @@ scope".
 
 2,803 distinct power-cut points across the OTA install, confirm and bootloader metadata paths, 0 violations.
 The harness was validated by injecting real defects, which it caught (2,705 and 88 violations respectively).
-Renode suites: signature attacks 6/6, trial and revert 12/12, OTA and anti-rollback 8/8, power cuts on the
-real ARM binary 15/15. Bootloader 6.9 KB of a 32 KB region. Verifying a signature is 98.8% of boot cost
+Robot Framework suites under Renode (28 tests): signature attacks, trial and revert, OTA and anti-rollback,
+and 14 power-cut points plus a control on the real ARM binary, all passing. Bootloader 6.9 KB of a 32 KB region. Verifying a signature is 98.8% of boot cost
 (7.96 M emulated instructions, not cycles). Details in `docs/results.md`.
 
 ## Layout
@@ -32,9 +32,9 @@ bootloader/   boot logic (hardware-independent), STM32 flash driver, linker scri
 app/          demo app + SafeFlash app library (confirm, watchdog gating, installer)
 crypto/       own SHA-256, vendored micro-ecc (P-256)
 tools/        keytool.py, sign_image.py, mkmeta.py, summarize_sweep.py
-sim/          Renode platform script and headless runner
+sim/          Renode platform script, ad-hoc runner, Robot Framework suites (sim/robot/)
 tests/unit/   host unit tests + exhaustive power-cut sweep
-tests/renode/ Renode suites (signature, trial, OTA)
+tests/renode/ Robot test-artifact generator, boot-cost measurement
 docs/         design.md, results.md
 ```
 
@@ -49,10 +49,7 @@ mingw32-make -C tests/unit test         # host unit tests
 mingw32-make -C tests/unit sweep        # exhaustive power-cut sweep -> build/fault_sweep.csv
 python tools/summarize_sweep.py         # results table
 powershell -NoProfile -File sim/run.ps1 -Seconds 2   # boot in Renode, print UART
-python tests/renode/test_signature.py
-python tests/renode/test_trial.py
-python tests/renode/test_ota.py
-python tests/renode/test_powercut.py [--quick]
+powershell -NoProfile -File sim/run_robot.ps1        # Robot suites: signature, trial, ota, powercut (-Suite ota,powercut to pick)
 python tests/renode/measure_boot.py     # needs the build_nosig bootloader, see the script header
 ```
 
@@ -60,4 +57,4 @@ The dev private key is generated locally and must never be committed. `keys/` is
 
 ## Status
 
-Phases 0-6 complete apart from the items listed in `PROGRESS.md` (Robot Framework port, CI not yet run on a runner).
+Phases 0-6 complete. Open item in `PROGRESS.md`: the CI workflow has not been run on a GitHub runner yet.

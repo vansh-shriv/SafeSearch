@@ -30,3 +30,32 @@ jobs:
         with:
           name: fault-sweep-csv
           path: build/fault_sweep.csv
+
+  renode:
+    # Robot Framework suites on the emulated STM32F4. EXPERIMENTAL: developed against Renode 1.16 on Windows;
+    # this job uses the latest Linux portable build, so a failure here may be a Renode-version difference.
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install toolchain, Renode and test deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-arm-none-eabi make gcc
+          python -m pip install cryptography robotframework==6.1 robotframework-retryfailed==0.2.0 psutil pyyaml telnetlib3
+          wget -q https://builds.renode.io/renode-latest.linux-portable.tar.gz
+          mkdir renode && tar xf renode-latest.linux-portable.tar.gz -C renode --strip-components=1
+      - name: Build firmware
+        run: make TC_BIN=/usr/bin PY=python
+      - name: Generate test artifacts
+        run: python tests/renode/gen_artifacts.py
+      - name: Robot suites
+        run: ./renode/renode-test sim/robot/signature.robot sim/robot/trial.robot sim/robot/ota.robot sim/robot/powercut.robot -r build/robot
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: robot-results
+          path: build/robot

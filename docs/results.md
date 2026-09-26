@@ -52,12 +52,14 @@ one million `a`), metadata ping-pong, corruption fallback, sequence wrap, header
 
 ## Renode tests (emulated STM32F4, real firmware binaries)
 
+Robot Framework suites, run with `powershell -File sim/run_robot.ps1` (about 2 minutes for all 28 tests). The negative paths were checked: a wrong expected rejection reason, and a power-cut hook that never fires, both turn the suite red.
+
 | Suite | Result | What it shows |
 |---|---|---|
-| `tests/renode/test_signature.py` | 6/6 | Valid image boots. Attack images with self-consistent CRCs (stale hash, stale signature, version bump, wrong key, zeroed signature) are each rejected for the expected reason and the device falls back to the genuine image |
-| `tests/renode/test_trial.py` | 12/12 | A good image confirms and survives past the watchdog window and a reset. A "bad" image that never confirms gets exactly 3 watchdog-reset trials, then the bootloader reverts to the previous slot and stays there |
-| `tests/renode/test_powercut.py` | 15/15 | Power cuts on the real ARM binary: a Renode hook on the flash driver freezes the CPU at a chosen point during an OTA install, the machine is reset, and the bootloader must recover. Points: before the target-slot erase, three payload word boundaries, four header word boundaries, before the metadata sector erase, and each of the 5 words of the metadata commit. Every cut boots the old v1; the un-cut control boots v2 |
-| `tests/renode/test_ota.py` | 8/8 | OTA v1 to v2 installs, boots in trial, confirms, and raises the floor to 2. The installer refuses a validly signed v1 below the floor. The bootloader refuses v1 below the floor even if metadata points at it. A bad-signature image is installed but rejected at boot and reverted |
+| `sim/robot/signature.robot` | 6/6 | Genuine image boots. Attack images with self-consistent CRCs (stale hash, stale signature, version bump, wrong key, zeroed signature) are each rejected for the expected reason and the device falls back to the genuine image |
+| `sim/robot/trial.robot` | 3/3 | A good image confirms and survives past the watchdog window; the next boot is a normal one. A "bad" image that never confirms gets exactly 3 watchdog-reset trials, then the bootloader reverts to the previous slot and stays there |
+| `sim/robot/ota.robot` | 4/4 | OTA v1 to v2 installs, boots in trial, confirms, and raises the floor to 2. The installer refuses a validly signed v1 below the floor. The bootloader refuses v1 below the floor even if metadata points at it. A bad-signature image is installed but rejected at boot and reverted |
+| `sim/robot/powercut.robot` | 15/15 | Power cuts on the real ARM binary: a Renode hook on the flash driver freezes the CPU at a chosen point during an OTA install, the machine is reset, and the bootloader must recover. 14 cut points: before the target-slot erase, three payload word boundaries, four header word boundaries, before the metadata sector erase, and each of the 5 words of the metadata commit. Every cut boots the old v1 and never applies the update; the un-cut control boots v2 |
 
 ## Sizes (arm-none-eabi-size, `-Os`)
 
